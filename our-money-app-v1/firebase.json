@@ -1,0 +1,8 @@
+{
+  "firestore": [
+    {
+      "database": "budgetdb",
+      "rules": "firestore.rules"
+    }
+  ]
+}

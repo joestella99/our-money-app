@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function householdMember(code) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/households/$(code))
+        && request.auth.uid in get(/databases/$(database)/documents/households/$(code)).data.memberUids;
+    }
+
+    function validInvite(code) {
+      return exists(/databases/$(database)/documents/householdInvites/$(code))
+        && get(/databases/$(database)/documents/householdInvites/$(code)).data.active == true;
+    }
+
+    match /households/{code} {
+      allow create: if signedIn()
+        && request.auth.uid in request.resource.data.memberUids;
+
+      // Financial data can only be read by devices already joined to this household.
+      allow get: if signedIn()
+        && ('memberUids' in resource.data)
+        && request.auth.uid in resource.data.memberUids;
+      allow list: if false;
+
+      allow update: if signedIn() && (
+        // Normal updates by an existing household member.
+        (('memberUids' in resource.data) && request.auth.uid in resource.data.memberUids)
+        ||
+        // Join by valid invite code: the joining device may only add membership.
+        (('memberUids' in resource.data)
+          && validInvite(code)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids'])
+          && request.auth.uid in request.resource.data.memberUids)
+        ||
+        // One-time migration for documents created by the old test-mode app.
+        (!('memberUids' in resource.data)
+          && request.auth.uid in request.resource.data.memberUids)
+      );
+
+      allow delete: if signedIn()
+        && ('memberUids' in resource.data)
+        && request.auth.uid in resource.data.memberUids;
+    }
+
+    // Invite docs contain no financial information and cannot be listed.
+    // A signed-in device can check one exact code before joining.
+    match /householdInvites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create, update, delete: if householdMember(code);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
