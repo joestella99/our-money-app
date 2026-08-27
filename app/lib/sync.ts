@@ -1,11 +1,14 @@
 import {
   arrayUnion,
   collection,
+  deleteDoc,
   deleteField,
   doc,
   getDocs,
   getDoc,
   onSnapshot,
+  runTransaction,
+  serverTimestamp,
   setDoc,
   updateDoc,
   writeBatch,
@@ -54,7 +57,7 @@ function dataFromDocs(meta: DocumentData, expenseDocs: DocumentData[], historyDo
     history,
     actualIncome: meta.actualIncome ?? null,
     memberUids: meta.memberUids,
-    updatedAt: meta.updatedAt ?? 0,
+    updatedAt: typeof meta.updatedAt?.toMillis === "function" ? meta.updatedAt.toMillis() : (meta.updatedAt ?? 0),
   };
 }
 
@@ -78,6 +81,43 @@ async function readHousehold(db: Firestore, code: string): Promise<HouseholdData
 export function generateHouseholdCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+}
+
+export class HouseholdCodeCollisionError extends Error {
+  constructor() {
+    super("That household code is already in use. Please try again.");
+    this.name = "HouseholdCodeCollisionError";
+  }
+}
+
+/** Atomically reserves a code and creates the parent and invite documents. */
+export async function createHousehold(code: string, config: HouseholdConfig): Promise<void> {
+  const db = getDb();
+  const user = await ensureAnonymousAuth();
+  if (!db) throw new Error("Firebase is not configured.");
+  if (!user) throw new Error("Could not authenticate with Firebase.");
+
+  const householdRef = doc(db, "households", code);
+  const inviteRef = doc(db, "householdInvites", code);
+  await runTransaction(db, async transaction => {
+    // Invite documents are intentionally readable by an authenticated user so
+    // a code can be claimed without attempting a forbidden household read.
+    const invite = await transaction.get(inviteRef);
+    if (invite.exists()) throw new HouseholdCodeCollisionError();
+    transaction.set(householdRef, {
+      config,
+      actualIncome: null,
+      memberUids: [user.uid],
+      updatedAt: serverTimestamp(),
+      schemaVersion: 2,
+    });
+    transaction.set(inviteRef, {
+      householdCode: code,
+      active: true,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  cacheData(code, [], []);
 }
 
 export async function joinHousehold(code: string): Promise<HouseholdData | null> {
@@ -170,7 +210,7 @@ export async function pushHousehold(
       config: data.config,
       actualIncome: data.actualIncome,
       memberUids: [user.uid],
-      updatedAt: Date.now(),
+      updatedAt: serverTimestamp(),
       schemaVersion: 2,
     });
   }
@@ -207,7 +247,7 @@ export async function pushHousehold(
     config: data.config,
     actualIncome: data.actualIncome,
     memberUids: arrayUnion(user.uid),
-    updatedAt: Date.now(),
+    updatedAt: serverTimestamp(),
     schemaVersion: 2,
     expenses: deleteField(),
     history: deleteField(),
@@ -215,7 +255,7 @@ export async function pushHousehold(
   batch.set(doc(db, "householdInvites", code), {
     householdCode: code,
     active: true,
-    updatedAt: Date.now(),
+    updatedAt: serverTimestamp(),
   }, { merge: true });
   await batch.commit();
   syncCaches.set(code, { expenses: nextExpenses, history: nextHistory });
@@ -239,9 +279,10 @@ export async function deleteHousehold(code: string): Promise<void> {
     refs.slice(offset, offset + 450).forEach(ref => batch.delete(ref));
     await batch.commit();
   }
-  const batch = writeBatch(db);
-  batch.delete(doc(db, "householdInvites", code));
-  batch.delete(doc(db, "households", code));
-  await batch.commit();
+  // Delete the invite while the parent still exists. Invite deletion rules use
+  // the parent membership, so deleting both in one atomic batch can make that
+  // authorization lookup observe a missing parent and reject the whole batch.
+  await deleteDoc(doc(db, "householdInvites", code));
+  await deleteDoc(doc(db, "households", code));
   syncCaches.delete(code);
 }

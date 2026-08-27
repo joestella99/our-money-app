@@ -11,6 +11,12 @@ service cloud.firestore {
         && request.auth.uid in get(/databases/$(database)/documents/households/$(code)).data.memberUids;
     }
 
+    function householdMemberAfter(code) {
+      return signedIn()
+        && existsAfter(/databases/$(database)/documents/households/$(code))
+        && request.auth.uid in getAfter(/databases/$(database)/documents/households/$(code)).data.memberUids;
+    }
+
     function validInvite(code) {
       return exists(/databases/$(database)/documents/householdInvites/$(code))
         && get(/databases/$(database)/documents/householdInvites/$(code)).data.active == true;
@@ -61,11 +67,12 @@ service cloud.firestore {
     match /householdInvites/{code} {
       allow get: if signedIn();
       allow list: if false;
-      allow create, update: if householdMember(code);
+      // getAfter allows the parent and invite to be reserved atomically when a
+      // household is first created, while still requiring parent membership.
+      allow create, update: if householdMemberAfter(code);
 
-      // The client deletes the invite and household in the same batch. Check
-      // membership against the existing household so an owner can remove both
-      // documents atomically without leaving a reusable invite behind.
+      // The client deletes the invite first. Check membership against the
+      // existing household before the parent is removed.
       allow delete: if signedIn()
         && exists(/databases/$(database)/documents/households/$(code))
         && request.auth.uid in get(/databases/$(database)/documents/households/$(code)).data.memberUids;

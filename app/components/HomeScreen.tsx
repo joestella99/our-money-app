@@ -30,13 +30,18 @@ export function HomeScreen({
     }
     setJoinLoading(true);
     setJoinError("");
-    const data = await joinHousehold(joinCode.toUpperCase().trim());
-    setJoinLoading(false);
-    if (!data) {
-      setJoinError("Household not found. Double-check the code.");
-      return;
+    try {
+      const data = await joinHousehold(joinCode.toUpperCase().trim());
+      if (!data) {
+        setJoinError("Household not found. Double-check the code.");
+        return;
+      }
+      await onComplete({ type: "join", data, code: joinCode.toUpperCase().trim() });
+    } catch (error) {
+      setJoinError(error instanceof Error ? error.message : "Could not open the household. Please try again.");
+    } finally {
+      setJoinLoading(false);
     }
-    await onComplete({ type: "join", data, code: joinCode.toUpperCase().trim() });
   }
 
   return (
@@ -56,22 +61,24 @@ export function HomeScreen({
         )}
 
         {households.map(h => (
-          <button key={h.code} className="household-item" onClick={() => onSelect(h)}>
-            <div className="household-item-info">
-              <div className="household-item-name">{h.name}</div>
-              <div className="household-item-code">{h.code}</div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div key={h.code} className="household-item">
+            <button className="household-select" onClick={() => onSelect(h)}>
+              <div className="household-item-info">
+                <div className="household-item-name">{h.name}</div>
+                <div className="household-item-code">{h.code}</div>
+              </div>
               <span style={{ color: "var(--muted)", fontSize: "1.4rem" }}>&#x203A;</span>
+            </button>
+            <div style={{ display: "flex", alignItems: "center" }}>
               <button
                 className="x-btn"
                 aria-label="Remove from list"
-                onClick={e => { e.stopPropagation(); onRemove(h.code); }}
+                onClick={() => onRemove(h.code)}
               >
                 &#xD7;
               </button>
             </div>
-          </button>
+          </div>
         ))}
 
         {joining && (
