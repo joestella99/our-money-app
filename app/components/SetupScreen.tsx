@@ -1,10 +1,10 @@
 ﻿"use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { HouseholdConfig, BudgetLine } from "../lib/types";
 import { money } from "../lib/utils";
 import { isFirebaseConfigured } from "../lib/firebase";
-import { joinHousehold, generateHouseholdCode, type SetupResult } from "../lib/sync";
+import { HouseholdCodeCollisionError, joinHousehold, generateHouseholdCode, type SetupResult } from "../lib/sync";
 
 export function SetupScreen({
   onComplete,
@@ -22,6 +22,9 @@ export function SetupScreen({
   const [budgets,     setBudgets]     = useState<BudgetLine[]>([]);
   const [catName,     setCatName]     = useState("");
   const [catAmt,      setCatAmt]      = useState("");
+  const [finishing,   setFinishing]   = useState(false);
+  const [finishError, setFinishError] = useState("");
+  const creationCode = useRef<string | null>(null);
 
   // Join existing household
   const [joining,     setJoining]     = useState(false);
@@ -31,23 +34,48 @@ export function SetupScreen({
 
   function addMember() {
     const t = memberInput.trim();
-    if (t && !members.includes(t)) setMembers(p => [...p, t]);
+    if (!t) return window.alert("Please enter a member name.");
+    if (members.some(member => member.toLocaleLowerCase() === t.toLocaleLowerCase())) {
+      return window.alert("That household member has already been added.");
+    }
+    setMembers(p => [...p, t]);
     setMemberInput("");
   }
   function addBudget() {
     const n = catName.trim(), a = Number(catAmt);
-    if (n && a > 0 && !budgets.find(b => b.category === n)) {
-      setBudgets(p => [...p, { category: n, amount: a }]);
-      setCatName(""); setCatAmt("");
+    if (!n) return window.alert("Please enter a category name.");
+    if (!Number.isFinite(a) || a <= 0) return window.alert("Please enter a budget amount greater than $0.");
+    if (budgets.some(budget => budget.category.toLocaleLowerCase() === n.toLocaleLowerCase())) {
+      return window.alert("That budget category has already been added.");
     }
+    setBudgets(p => [...p, { category: n, amount: a }]);
+    setCatName(""); setCatAmt("");
   }
   async function finish() {
-    const code = generateHouseholdCode();
+    // Keep one code for all retries. If the network response is lost after the
+    // write succeeds, retrying must update that household rather than create a
+    // second household containing the same setup data.
+    if (finishing) return;
+    if (!name.trim() || members.length === 0 || Number(takeHome) <= 0 || Number(savings) < 0 || budgets.length === 0) {
+      window.alert("Please complete every required setup field with valid positive amounts before creating the household.");
+      return;
+    }
+    const code = creationCode.current ?? generateHouseholdCode();
+    creationCode.current = code;
     const config: HouseholdConfig = {
-      name, members, monthlyTakeHome: Number(takeHome),
+      name: name.trim(), members, monthlyTakeHome: Number(takeHome),
       monthlySavingsGoal: Number(savings), budgets,
     };
-    await onComplete({ type: "create", config, code });
+    setFinishing(true);
+    setFinishError("");
+    try {
+      await onComplete({ type: "create", config, code });
+    } catch (error) {
+      if (error instanceof HouseholdCodeCollisionError) creationCode.current = null;
+      setFinishError(error instanceof Error ? error.message : "Could not create the household. Please try again.");
+    } finally {
+      setFinishing(false);
+    }
   }
 
   async function handleJoin() {
@@ -57,13 +85,18 @@ export function SetupScreen({
     }
     setJoinLoading(true);
     setJoinError("");
-    const data = await joinHousehold(joinCode.toUpperCase().trim());
-    setJoinLoading(false);
-    if (!data) {
-      setJoinError("Household not found. Check the code and try again.");
-      return;
+    try {
+      const data = await joinHousehold(joinCode.toUpperCase().trim());
+      if (!data) {
+        setJoinError("Household not found. Check the code and try again.");
+        return;
+      }
+      await onComplete({ type: "join", data, code: joinCode.toUpperCase().trim() });
+    } catch (error) {
+      setJoinError(error instanceof Error ? error.message : "Could not open the household. Please try again.");
+    } finally {
+      setJoinLoading(false);
     }
-    await onComplete({ type: "join", data, code: joinCode.toUpperCase().trim() });
   }
 
   const STEPS = [
@@ -144,13 +177,13 @@ export function SetupScreen({
       <p className="subtle">Total household take-home pay each month.</p>
       <div className="field-label">Take-home pay</div>
       <div className="money-input"><span>$</span>
-        <input value={takeHome} onChange={e => setTakeHome(e.target.value)} inputMode="decimal" placeholder="0" autoFocus />
+        <input value={takeHome} onChange={e => setTakeHome(e.target.value)} type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0" autoFocus />
       </div>
       <div className="field-label" style={{ marginTop: 16 }}>Savings goal</div>
       <div className="money-input"><span>$</span>
-        <input value={savings} onChange={e => setSavings(e.target.value)} inputMode="decimal" placeholder="0" />
+        <input value={savings} onChange={e => setSavings(e.target.value)} type="number" min="0" step="0.01" inputMode="decimal" placeholder="0" />
       </div>
-      <button className="primary-action full" disabled={!Number(takeHome)} onClick={() => setStep(3)}>Continue</button>
+      <button className="primary-action full" disabled={Number(takeHome) <= 0 || Number(savings) < 0} onClick={() => setStep(3)}>Continue</button>
     </div>,
 
     // 3 — budgets
@@ -162,7 +195,7 @@ export function SetupScreen({
         <input className="field" value={catName} onChange={e => setCatName(e.target.value)}
           placeholder="Category name" onKeyDown={e => e.key === "Enter" && addBudget()} />
         <div className="money-input tight"><span>$</span>
-          <input value={catAmt} onChange={e => setCatAmt(e.target.value)} inputMode="decimal" placeholder="0"
+          <input value={catAmt} onChange={e => setCatAmt(e.target.value)} type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0"
             onKeyDown={e => e.key === "Enter" && addBudget()} />
         </div>
         <button className="pill-button" onClick={addBudget}>Add</button>
@@ -175,8 +208,9 @@ export function SetupScreen({
           </div>
         ))}
       </div>
-      <button className="primary-action full" disabled={budgets.length === 0} onClick={finish}>
-        Get started &#x2192;
+      {finishError && <p className="form-error" role="alert">{finishError}</p>}
+      <button className="primary-action full" disabled={budgets.length === 0 || finishing} onClick={() => void finish()}>
+        {finishing ? "Creating household..." : <>Get started &#x2192;</>}
       </button>
     </div>,
   ];

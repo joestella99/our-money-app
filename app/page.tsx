@@ -4,12 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import {
   load, save,
   KEY_CONFIG, KEY_EXPENSES, KEY_HISTORY, KEY_MONTH, KEY_ACTUAL_INCOME,
-  KEY_HOUSEHOLD, KEY_HOUSEHOLDS_LIST,
+  KEY_HOUSEHOLD, KEY_HOUSEHOLDS_LIST, loadHousehold, migrateLegacyHouseholdCache,
+  removeHouseholdCache, saveHousehold,
 } from "./lib/storage";
 import type { HouseholdConfig, Expense, MonthSnapshot, HouseholdEntry } from "./lib/types";
 import { getYM } from "./lib/utils";
 import { isFirebaseConfigured } from "./lib/firebase";
-import { deleteHousehold, subscribeToHousehold, pushHousehold, type SetupResult } from "./lib/sync";
+import { createHousehold, deleteHousehold, subscribeToHousehold, pushHousehold, type SetupResult } from "./lib/sync";
 import { HomeScreen }   from "./components/HomeScreen";
 import { SetupScreen }  from "./components/SetupScreen";
 import { DashView }     from "./components/DashView";
@@ -30,9 +31,9 @@ export default function HomePage() {
   const [actualIncome,  setActualIncome]  = useState<number | null>(null);
   const [tab,           setTab]           = useState<"dash" | "history" | "settings">("dash");
   const [syncError,     setSyncError]     = useState("");
+  const [syncRetry,     setSyncRetry]     = useState(0);
 
-  const lastFirestoreMs = useRef(0);
-  const lastPushMs      = useRef(0);
+  const setupInProgress = useRef(false);
 
   // ── Hydrate ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -47,6 +48,8 @@ export default function HomePage() {
       save(KEY_HOUSEHOLDS_LIST, finalList);
     }
 
+    if (oldCode) migrateLegacyHouseholdCache(oldCode);
+
     setHouseholds(finalList);
 
     // Daily-use shortcut: reopen the last household automatically. The household
@@ -54,10 +57,10 @@ export default function HomePage() {
     const lastEntry = oldCode ? finalList.find(h => h.code === oldCode) : undefined;
     if (lastEntry) {
       setHouseholdCode(lastEntry.code);
-      setConfig(oldConfig);
-      setExpenses(load<Expense[]>(KEY_EXPENSES, []));
-      setHistory(load<MonthSnapshot[]>(KEY_HISTORY, []));
-      setActualIncome(load<number | null>(KEY_ACTUAL_INCOME, null));
+      setConfig(loadHousehold<HouseholdConfig | null>(lastEntry.code, KEY_CONFIG, oldConfig));
+      setExpenses(loadHousehold<Expense[]>(lastEntry.code, KEY_EXPENSES, []));
+      setHistory(loadHousehold<MonthSnapshot[]>(lastEntry.code, KEY_HISTORY, []));
+      setActualIncome(loadHousehold<number | null>(lastEntry.code, KEY_ACTUAL_INCOME, null));
       setMode("app");
     }
 
@@ -72,17 +75,15 @@ export default function HomePage() {
     const unsub = subscribeToHousehold(
       householdCode,
       (remote) => {
-        if (remote.updatedAt <= lastPushMs.current) return;
-        lastFirestoreMs.current = Date.now();
         setSyncError("");
-        setConfig(remote.config);
-        setExpenses(remote.expenses);
-        setHistory(remote.history);
+        setConfig(current => JSON.stringify(current) === JSON.stringify(remote.config) ? current : remote.config);
+        setExpenses(current => JSON.stringify(current) === JSON.stringify(remote.expenses) ? current : remote.expenses);
+        setHistory(current => JSON.stringify(current) === JSON.stringify(remote.history) ? current : remote.history);
         setActualIncome(remote.actualIncome);
-        save(KEY_CONFIG,        remote.config);
-        save(KEY_EXPENSES,      remote.expenses);
-        save(KEY_HISTORY,       remote.history);
-        save(KEY_ACTUAL_INCOME, remote.actualIncome);
+        saveHousehold(householdCode, KEY_CONFIG,        remote.config);
+        saveHousehold(householdCode, KEY_EXPENSES,      remote.expenses);
+        saveHousehold(householdCode, KEY_HISTORY,       remote.history);
+        saveHousehold(householdCode, KEY_ACTUAL_INCOME, remote.actualIncome);
       },
       () => {
         clearLocalHousehold(householdCode);
@@ -91,14 +92,12 @@ export default function HomePage() {
       error => setSyncError(error.message || "Household sync failed.")
     );
     return unsub;
-  }, [hydrated, householdCode]);
+  }, [hydrated, householdCode, syncRetry]);
 
   // ── Push to Firestore (debounced) ──────────────────────────────────────────
   useEffect(() => {
     if (!hydrated || !householdCode || !config || mode !== "app" || !isFirebaseConfigured()) return;
     const timer = setTimeout(() => {
-      if (Date.now() - lastFirestoreMs.current < 2000) return;
-      lastPushMs.current = Date.now();
       pushHousehold(householdCode, { config, expenses, history, actualIncome })
         .then(() => setSyncError(""))
         .catch(error => setSyncError(error instanceof Error ? error.message : "Could not save to Firebase."));
@@ -107,9 +106,28 @@ export default function HomePage() {
   }, [expenses, config, history, actualIncome, householdCode, hydrated, mode]);
 
   // ── Persist to localStorage ────────────────────────────────────────────────
-  useEffect(() => { if (hydrated) save(KEY_EXPENSES,      expenses);     }, [expenses,     hydrated]);
-  useEffect(() => { if (hydrated) save(KEY_ACTUAL_INCOME, actualIncome); }, [actualIncome, hydrated]);
-  useEffect(() => { if (hydrated && config) save(KEY_CONFIG, config);    }, [config,       hydrated]);
+  useEffect(() => {
+    if (hydrated && householdCode && mode === "app") saveHousehold(householdCode, KEY_EXPENSES, expenses);
+  }, [expenses, hydrated, householdCode, mode]);
+  useEffect(() => {
+    if (hydrated && householdCode && mode === "app") saveHousehold(householdCode, KEY_HISTORY, history);
+  }, [history, hydrated, householdCode, mode]);
+  useEffect(() => {
+    if (hydrated && householdCode && mode === "app") saveHousehold(householdCode, KEY_ACTUAL_INCOME, actualIncome);
+  }, [actualIncome, hydrated, householdCode, mode]);
+  useEffect(() => {
+    if (hydrated && householdCode && config && mode === "app") saveHousehold(householdCode, KEY_CONFIG, config);
+  }, [config, hydrated, householdCode, mode]);
+  useEffect(() => {
+    if (!hydrated || !householdCode || !config || mode !== "app") return;
+    setHouseholds(current => {
+      const entry = current.find(item => item.code === householdCode);
+      if (!entry || entry.name === config.name) return current;
+      const updated = current.map(item => item.code === householdCode ? { ...item, name: config.name } : item);
+      save(KEY_HOUSEHOLDS_LIST, updated);
+      return updated;
+    });
+  }, [config, householdCode, hydrated, mode]);
 
   // ── Navigation helpers ─────────────────────────────────────────────────────
   function goHome() {
@@ -123,28 +141,19 @@ export default function HomePage() {
   }
 
   function selectHousehold(entry: HouseholdEntry) {
-    const prevCode = load<string | null>(KEY_HOUSEHOLD, null);
     setHouseholdCode(entry.code);
     save(KEY_HOUSEHOLD, entry.code);
-
-    // Load cached data if available for this household
-    if (prevCode === entry.code) {
-      setConfig(load<HouseholdConfig | null>(KEY_CONFIG, null));
-      setExpenses(load<Expense[]>(KEY_EXPENSES, []));
-      setHistory(load<MonthSnapshot[]>(KEY_HISTORY, []));
-      setActualIncome(load<number | null>(KEY_ACTUAL_INCOME, null));
-    } else {
-      setConfig(null);
-      setExpenses([]);
-      setHistory([]);
-      setActualIncome(null);
-    }
+    setSyncError("");
+    setConfig(loadHousehold<HouseholdConfig | null>(entry.code, KEY_CONFIG, null));
+    setExpenses(loadHousehold<Expense[]>(entry.code, KEY_EXPENSES, []));
+    setHistory(loadHousehold<MonthSnapshot[]>(entry.code, KEY_HISTORY, []));
+    setActualIncome(loadHousehold<number | null>(entry.code, KEY_ACTUAL_INCOME, null));
 
     // Handle month rollover for the selected household
-    const prev  = load<string>(KEY_MONTH, "");
+    const prev  = loadHousehold<string>(entry.code, KEY_MONTH, "");
     const today = getYM();
     if (prev && prev !== today) {
-      save(KEY_MONTH, today);
+      saveHousehold(entry.code, KEY_MONTH, today);
     }
 
     setTab("dash");
@@ -152,39 +161,51 @@ export default function HomePage() {
   }
 
   async function handleSetupComplete(result: SetupResult) {
-    const code = result.code;
-    const name = result.type === "create" ? result.config.name : result.data.config.name;
-    const entry: HouseholdEntry = { code, name };
+    // Async button handlers can be invoked more than once before React paints a
+    // disabled state. Guard the operation here too, at the data boundary.
+    if (setupInProgress.current) return;
+    setupInProgress.current = true;
+    try {
+      const code = result.code;
+      const name = result.type === "create" ? result.config.name : result.data.config.name;
+      const entry: HouseholdEntry = { code, name };
 
-    const updatedList = [...households.filter(h => h.code !== code), entry];
-    setHouseholds(updatedList);
-    save(KEY_HOUSEHOLDS_LIST, updatedList);
-    save(KEY_HOUSEHOLD, code);
-    setHouseholdCode(code);
-
-    if (result.type === "create") {
-      setConfig(result.config);
-      setExpenses([]);
-      setHistory([]);
-      setActualIncome(null);
-      if (isFirebaseConfigured()) {
-        lastPushMs.current = Date.now();
-        await pushHousehold(code, { config: result.config, expenses: [], history: [], actualIncome: null });
+      if (result.type === "create") {
+        if (isFirebaseConfigured()) {
+          await createHousehold(code, result.config);
+        }
+        setConfig(result.config);
+        setExpenses([]);
+        setHistory([]);
+        setActualIncome(null);
+      } else {
+        setConfig(result.data.config);
+        setExpenses(result.data.expenses);
+        setHistory(result.data.history);
+        setActualIncome(result.data.actualIncome);
+        saveHousehold(code, KEY_CONFIG,        result.data.config);
+        saveHousehold(code, KEY_EXPENSES,      result.data.expenses);
+        saveHousehold(code, KEY_HISTORY,       result.data.history);
+        saveHousehold(code, KEY_ACTUAL_INCOME, result.data.actualIncome);
       }
-    } else {
-      setConfig(result.data.config);
-      setExpenses(result.data.expenses);
-      setHistory(result.data.history);
-      setActualIncome(result.data.actualIncome);
-      save(KEY_CONFIG,        result.data.config);
-      save(KEY_EXPENSES,      result.data.expenses);
-      save(KEY_HISTORY,       result.data.history);
-      save(KEY_ACTUAL_INCOME, result.data.actualIncome);
-    }
 
-    save(KEY_MONTH, getYM());
-    setTab("dash");
-    setMode("app");
+      // Only expose and persist the household after its initial remote write has
+      // succeeded. A failed request can then be retried without a ghost entry.
+      const updatedList = [...households.filter(h => h.code !== code), entry];
+      setHouseholds(updatedList);
+      save(KEY_HOUSEHOLDS_LIST, updatedList);
+      save(KEY_HOUSEHOLD, code);
+      setHouseholdCode(code);
+      saveHousehold(code, KEY_CONFIG, result.type === "create" ? result.config : result.data.config);
+      saveHousehold(code, KEY_EXPENSES, result.type === "create" ? [] : result.data.expenses);
+      saveHousehold(code, KEY_HISTORY, result.type === "create" ? [] : result.data.history);
+      saveHousehold(code, KEY_ACTUAL_INCOME, result.type === "create" ? null : result.data.actualIncome);
+      saveHousehold(code, KEY_MONTH, getYM());
+      setTab("dash");
+      setMode("app");
+    } finally {
+      setupInProgress.current = false;
+    }
   }
 
   function removeHousehold(code: string) {
@@ -200,12 +221,8 @@ export default function HomePage() {
       save(KEY_HOUSEHOLDS_LIST, updated);
       return updated;
     });
-    save(KEY_HOUSEHOLD, null);
-    localStorage.removeItem(KEY_CONFIG);
-    localStorage.removeItem(KEY_EXPENSES);
-    localStorage.removeItem(KEY_HISTORY);
-    localStorage.removeItem(KEY_MONTH);
-    localStorage.removeItem(KEY_ACTUAL_INCOME);
+    if (load<string | null>(KEY_HOUSEHOLD, null) === code) save(KEY_HOUSEHOLD, null);
+    removeHouseholdCache(code);
     setConfig(null);
     setExpenses([]);
     setHistory([]);
@@ -251,7 +268,16 @@ export default function HomePage() {
     return (
       <div className="app-shell">
         <div className="phone-frame" style={{ paddingTop: 100, textAlign: "center" }}>
-          <p className="subtle">Loading household&#x2026;</p>
+          {syncError ? (
+            <>
+              <h2>Couldn&apos;t load this household</h2>
+              <p className="form-error" role="alert">{syncError}</p>
+              <button className="primary-action full" onClick={() => { setSyncError(""); setSyncRetry(value => value + 1); }}>
+                Try again
+              </button>
+              <button className="text-button" style={{ marginTop: 16 }} onClick={goHome}>Back to households</button>
+            </>
+          ) : <p className="subtle">Loading household&#x2026;</p>}
         </div>
       </div>
     );

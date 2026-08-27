@@ -26,7 +26,16 @@ export function ExpenseFormSheet({
 
   function submit() {
     const a = Number(amount);
-    if (!a || a <= 0 || !desc.trim()) return;
+    const missing: string[] = [];
+    if (!Number.isFinite(a) || a <= 0) missing.push("an amount greater than $0");
+    if (!desc.trim()) missing.push("a description");
+    if (!date) missing.push("a date");
+    if (!cat) missing.push("a category");
+    if (!paidBy) missing.push("who paid");
+    if (missing.length > 0) {
+      window.alert(`Please add ${missing.join(", ")} before saving this expense.`);
+      return;
+    }
     onSave({
       id:          initial?.id ?? Date.now(),
       amount:      a,
@@ -51,7 +60,7 @@ export function ExpenseFormSheet({
         <label>Amount</label>
         <div className="money-input"><span>$</span>
           <input value={amount} onChange={e => setAmount(e.target.value)}
-            inputMode="decimal" placeholder="0" autoFocus={!isEdit} />
+            inputMode="decimal" type="number" min="0.01" step="0.01" placeholder="0" autoFocus={!isEdit} />
         </div>
 
         <label>Description</label>

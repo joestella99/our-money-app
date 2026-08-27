@@ -49,18 +49,36 @@ export function SettingsView({
 
   function addMember() {
     const t = memberInput.trim();
-    if (t && !draft.members.includes(t)) patch({ members: [...draft.members, t] });
+    if (!t) return window.alert("Please enter a member name.");
+    if (draft.members.some(member => member.toLocaleLowerCase() === t.toLocaleLowerCase())) {
+      return window.alert("That household member has already been added.");
+    }
+    patch({ members: [...draft.members, t] });
     setMemberInput("");
   }
   function addBudget() {
     const n = catName.trim(), a = Number(catAmt);
-    if (n && a > 0 && !draft.budgets.find(b => b.category === n)) {
-      patch({ budgets: [...draft.budgets, { category: n, amount: a }] });
-      setCatName(""); setCatAmt("");
+    if (!n) return window.alert("Please enter a category name.");
+    if (!Number.isFinite(a) || a <= 0) return window.alert("Please enter a budget amount greater than $0.");
+    if (draft.budgets.some(budget => budget.category.toLocaleLowerCase() === n.toLocaleLowerCase())) {
+      return window.alert("That budget category has already been added.");
     }
+    patch({ budgets: [...draft.budgets, { category: n, amount: a }] });
+    setCatName(""); setCatAmt("");
   }
   function saveSettings() {
-    setConfig(draft);
+    const missing: string[] = [];
+    if (!draft.name.trim()) missing.push("a household name");
+    if (draft.members.length === 0) missing.push("at least one household member");
+    if (!Number.isFinite(draft.monthlyTakeHome) || draft.monthlyTakeHome <= 0) missing.push("a take-home amount greater than $0");
+    if (!Number.isFinite(draft.monthlySavingsGoal) || draft.monthlySavingsGoal < 0) missing.push("a non-negative savings goal");
+    if (draft.budgets.length === 0) missing.push("at least one budget category");
+    if (draft.budgets.some(budget => !Number.isFinite(budget.amount) || budget.amount <= 0)) missing.push("positive amounts for every budget category");
+    if (missing.length > 0) {
+      window.alert(`Please add ${missing.join(", ")} before saving settings.`);
+      return;
+    }
+    setConfig({ ...draft, name: draft.name.trim() });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -199,12 +217,12 @@ export function SettingsView({
         <div className="field-label">Default take-home pay</div>
         <div className="money-input"><span>$</span>
           <input value={draft.monthlyTakeHome || ""}
-            onChange={e => patch({ monthlyTakeHome: Number(e.target.value) })} inputMode="decimal" placeholder="0" />
+            onChange={e => patch({ monthlyTakeHome: Number(e.target.value) })} type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0" />
         </div>
         <div className="field-label" style={{ marginTop: 14 }}>Savings goal</div>
         <div className="money-input"><span>$</span>
           <input value={draft.monthlySavingsGoal || ""}
-            onChange={e => patch({ monthlySavingsGoal: Number(e.target.value) })} inputMode="decimal" placeholder="0" />
+            onChange={e => patch({ monthlySavingsGoal: Number(e.target.value) })} type="number" min="0" step="0.01" inputMode="decimal" placeholder="0" />
         </div>
       </section>
 
@@ -217,6 +235,9 @@ export function SettingsView({
           <input
             value={actualIncome ?? ""}
             onChange={e => setActualIncome(e.target.value ? Number(e.target.value) : null)}
+            type="number"
+            min="0"
+            step="0.01"
             inputMode="decimal"
             placeholder={String(config.monthlyTakeHome)}
           />
@@ -235,7 +256,7 @@ export function SettingsView({
           <input className="field" value={catName} onChange={e => setCatName(e.target.value)}
             placeholder="Category" onKeyDown={e => e.key === "Enter" && addBudget()} />
           <div className="money-input tight"><span>$</span>
-            <input value={catAmt} onChange={e => setCatAmt(e.target.value)} inputMode="decimal" placeholder="0"
+            <input value={catAmt} onChange={e => setCatAmt(e.target.value)} type="number" min="0.01" step="0.01" inputMode="decimal" placeholder="0"
               onKeyDown={e => e.key === "Enter" && addBudget()} />
           </div>
           <button className="pill-button" onClick={addBudget}>Add</button>
@@ -248,7 +269,7 @@ export function SettingsView({
                 <input value={b.amount || ""}
                   onChange={e => patch({ budgets: draft.budgets.map(x =>
                     x.category === b.category ? { ...x, amount: Number(e.target.value) } : x) })}
-                  inputMode="decimal" />
+                  type="number" min="0.01" step="0.01" inputMode="decimal" />
               </div>
               <button className="x-btn"
                 onClick={() => patch({ budgets: draft.budgets.filter(x => x.category !== b.category) })}>
