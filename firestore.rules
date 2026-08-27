@@ -57,7 +57,7 @@ service cloud.firestore {
         allow read, write: if householdMember(code);
       }
 
-      match /history/{yearMonth} {
+      match /archivedMonths/{yearMonth} {
         allow read, write: if householdMember(code);
       }
     }

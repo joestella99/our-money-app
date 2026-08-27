@@ -6,18 +6,23 @@ import { money, getYM, labelYM, todayISO } from "../lib/utils";
 import { Stat, ExpenseRow } from "./Shared";
 import { ExpenseFormSheet } from "./ExpenseFormSheet";
 import { AllSheet } from "./AllSheet";
+import { deleteExpense as deleteRemoteExpense, setExpense } from "../lib/sync";
 
 export function DashView({
   config,
   expenses,
   setExpenses,
   actualIncome,
+  householdCode,
+  onSyncError,
   onHome,
 }: {
   config: HouseholdConfig;
   expenses: Expense[];
   setExpenses: React.Dispatch<React.SetStateAction<Expense[]>>;
   actualIncome: number | null;
+  householdCode: string;
+  onSyncError: (message: string) => void;
   onHome: () => void;
 }) {
   const [showAdd,   setShowAdd]   = useState(false);
@@ -105,9 +110,28 @@ export function DashView({
       }));
   }, [config.budgets, categorySpent, dismissed]);
 
-  function deleteExpense(id: number)    { setExpenses(p => p.filter(x => x.id !== id)); }
-  function saveEdit(updated: Expense)   { setExpenses(p => p.map(e => e.id === updated.id ? updated : e)); }
-  function duplicateExpense(e: Expense) { setExpenses(p => [{ ...e, id: Date.now(), date: todayISO() }, ...p]); }
+  async function persistExpense(expense: Expense) {
+    try {
+      await setExpense(householdCode, expense);
+      setExpenses(current => [expense, ...current.filter(item => item.id !== expense.id)]);
+      onSyncError("");
+    } catch (error) {
+      onSyncError(error instanceof Error ? error.message : "Could not save expense.");
+    }
+  }
+  async function deleteExpense(id: number) {
+    try {
+      await deleteRemoteExpense(householdCode, id);
+      setExpenses(current => current.filter(item => item.id !== id));
+      onSyncError("");
+    } catch (error) {
+      onSyncError(error instanceof Error ? error.message : "Could not delete expense.");
+    }
+  }
+  function saveEdit(updated: Expense) { void persistExpense(updated); }
+  function duplicateExpense(e: Expense) {
+    void persistExpense({ ...e, id: Date.now(), date: todayISO() });
+  }
   function dismiss(cat: string)         { setDismissed(prev => new Set([...prev, cat])); }
 
   return (
@@ -264,7 +288,7 @@ export function DashView({
 
       {showAdd && (
         <ExpenseFormSheet config={config}
-          onSave={e => setExpenses(p => [e, ...p])} onClose={() => setShowAdd(false)} />
+          onSave={e => { void persistExpense(e); setShowAdd(false); }} onClose={() => setShowAdd(false)} />
       )}
       {showAll && (
         <AllSheet expenses={expenses}

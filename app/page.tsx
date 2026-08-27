@@ -32,6 +32,7 @@ export default function HomePage() {
   const [tab,           setTab]           = useState<"dash" | "history" | "settings">("dash");
   const [syncError,     setSyncError]     = useState("");
   const [syncRetry,     setSyncRetry]     = useState(0);
+  const [remoteReady,   setRemoteReady]   = useState(false);
 
   const setupInProgress = useRef(false);
 
@@ -72,9 +73,11 @@ export default function HomePage() {
   // ── Firestore subscription ─────────────────────────────────────────────────
   useEffect(() => {
     if (!hydrated || !householdCode || !isFirebaseConfigured()) return;
+    setRemoteReady(false);
     const unsub = subscribeToHousehold(
       householdCode,
       (remote) => {
+        setRemoteReady(true);
         setSyncError("");
         setConfig(current => JSON.stringify(current) === JSON.stringify(remote.config) ? current : remote.config);
         setExpenses(current => JSON.stringify(current) === JSON.stringify(remote.expenses) ? current : remote.expenses);
@@ -94,16 +97,16 @@ export default function HomePage() {
     return unsub;
   }, [hydrated, householdCode, syncRetry]);
 
-  // ── Push to Firestore (debounced) ──────────────────────────────────────────
+  // ── Push metadata to Firestore (debounced, only after server hydration) ───
   useEffect(() => {
-    if (!hydrated || !householdCode || !config || mode !== "app" || !isFirebaseConfigured()) return;
+    if (!remoteReady || !hydrated || !householdCode || !config || mode !== "app" || !isFirebaseConfigured()) return;
     const timer = setTimeout(() => {
-      pushHousehold(householdCode, { config, expenses, history, actualIncome })
+      pushHousehold(householdCode, { config, actualIncome })
         .then(() => setSyncError(""))
         .catch(error => setSyncError(error instanceof Error ? error.message : "Could not save to Firebase."));
     }, 1500);
     return () => clearTimeout(timer);
-  }, [expenses, config, history, actualIncome, householdCode, hydrated, mode]);
+  }, [config, actualIncome, householdCode, hydrated, mode, remoteReady]);
 
   // ── Persist to localStorage ────────────────────────────────────────────────
   useEffect(() => {
@@ -137,10 +140,12 @@ export default function HomePage() {
     setExpenses([]);
     setHistory([]);
     setActualIncome(null);
+    setRemoteReady(false);
     setTab("dash");
   }
 
   function selectHousehold(entry: HouseholdEntry) {
+    setRemoteReady(false);
     setHouseholdCode(entry.code);
     save(KEY_HOUSEHOLD, entry.code);
     setSyncError("");
@@ -196,6 +201,7 @@ export default function HomePage() {
       save(KEY_HOUSEHOLDS_LIST, updatedList);
       save(KEY_HOUSEHOLD, code);
       setHouseholdCode(code);
+      setRemoteReady(false);
       saveHousehold(code, KEY_CONFIG, result.type === "create" ? result.config : result.data.config);
       saveHousehold(code, KEY_EXPENSES, result.type === "create" ? [] : result.data.expenses);
       saveHousehold(code, KEY_HISTORY, result.type === "create" ? [] : result.data.history);
@@ -228,6 +234,7 @@ export default function HomePage() {
     setHistory([]);
     setActualIncome(null);
     setHouseholdCode(null);
+    setRemoteReady(false);
     setMode("home");
     setTab("dash");
     setSyncError("");
@@ -264,7 +271,7 @@ export default function HomePage() {
   }
 
   // mode === "app"
-  if (!config) {
+  if (!config || (isFirebaseConfigured() && !remoteReady)) {
     return (
       <div className="app-shell">
         <div className="phone-frame" style={{ paddingTop: 100, textAlign: "center" }}>
@@ -292,6 +299,8 @@ export default function HomePage() {
             expenses={expenses}
             setExpenses={setExpenses}
             actualIncome={actualIncome}
+            householdCode={householdCode!}
+            onSyncError={setSyncError}
             onHome={goHome}
           />
         )}

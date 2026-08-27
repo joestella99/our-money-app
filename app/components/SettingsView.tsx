@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { Expense, HouseholdConfig, MonthSnapshot } from "../lib/types";
 import { getYM, labelYM, exportCSV, money, nextMonthISO } from "../lib/utils";
 import { save, KEY_CONFIG, KEY_HISTORY, KEY_EXPENSES, KEY_ACTUAL_INCOME } from "../lib/storage";
+import { archiveMonth } from "../lib/sync";
 
 type BackupData = {
   version: number;
@@ -151,7 +152,8 @@ export function SettingsView({
       setDeleting(false);
     }
   }
-  function closeMonth() {
+  async function closeMonth() {
+    if (!householdCode) return;
     const ym = getYM();
     const snap: MonthSnapshot = {
       yearMonth:    ym,
@@ -171,13 +173,18 @@ export function SettingsView({
         date: nextMonthISO(e.date),
       }));
 
-    save(KEY_HISTORY,       newHist);
-    save(KEY_EXPENSES,      recurringNextMonth);
-    save(KEY_ACTUAL_INCOME, null);
-    setHistory(newHist);
-    setExpenses(recurringNextMonth);
-    setActualIncome(null);
-    setConfirmClose(false);
+    try {
+      await archiveMonth(householdCode, snap, recurringNextMonth);
+      save(KEY_HISTORY,       newHist);
+      save(KEY_EXPENSES,      recurringNextMonth);
+      save(KEY_ACTUAL_INCOME, null);
+      setHistory(newHist);
+      setExpenses(recurringNextMonth);
+      setActualIncome(null);
+      setConfirmClose(false);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Could not archive this month.");
+    }
   }
 
   return (

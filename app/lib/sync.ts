@@ -2,7 +2,6 @@ import {
   arrayUnion,
   collection,
   deleteDoc,
-  deleteField,
   doc,
   getDocs,
   getDoc,
@@ -13,7 +12,6 @@ import {
   updateDoc,
   writeBatch,
   type DocumentData,
-  type DocumentReference,
   type Firestore,
 } from "firebase/firestore";
 import { ensureAnonymousAuth, getDb } from "./firebase";
@@ -32,25 +30,12 @@ export type SetupResult =
   | { type: "create"; config: HouseholdConfig; code: string }
   | { type: "join"; data: HouseholdData; code: string };
 
-type SyncCache = { expenses: Map<string, string>; history: Map<string, string> };
-const syncCaches = new Map<string, SyncCache>();
-
 const expensesPath = (db: Firestore, code: string) => collection(db, "households", code, "expenses");
-const historyPath = (db: Firestore, code: string) => collection(db, "households", code, "history");
-const serialized = (value: unknown) => JSON.stringify(value);
-
-function cacheData(code: string, expenses: Expense[], history: MonthSnapshot[]) {
-  syncCaches.set(code, {
-    expenses: new Map(expenses.map(item => [String(item.id), serialized(item)])),
-    history: new Map(history.map(item => [item.yearMonth, serialized(item)])),
-  });
-}
+const archivedMonthsPath = (db: Firestore, code: string) => collection(db, "households", code, "archivedMonths");
 
 function dataFromDocs(meta: DocumentData, expenseDocs: DocumentData[], historyDocs: DocumentData[]): HouseholdData {
-  // Arrays are read only as a migration fallback. New writes use subcollections,
-  // avoiding Firestore's 1 MiB document limit and rewriting years of data.
-  const expenses = expenseDocs.length ? expenseDocs as Expense[] : (meta.expenses ?? []);
-  const history = historyDocs.length ? historyDocs as MonthSnapshot[] : (meta.history ?? []);
+  const expenses = expenseDocs as Expense[];
+  const history = historyDocs as MonthSnapshot[];
   return {
     config: meta.config,
     expenses,
@@ -65,7 +50,7 @@ async function readHousehold(db: Firestore, code: string): Promise<HouseholdData
   const [meta, expenseSnap, historySnap] = await Promise.all([
     getDoc(doc(db, "households", code)),
     getDocs(expensesPath(db, code)),
-    getDocs(historyPath(db, code)),
+    getDocs(archivedMonthsPath(db, code)),
   ]);
   if (!meta.exists()) return null;
   const data = dataFromDocs(
@@ -73,7 +58,6 @@ async function readHousehold(db: Firestore, code: string): Promise<HouseholdData
     expenseSnap.docs.map(item => item.data()),
     historySnap.docs.map(item => item.data())
   );
-  cacheData(code, data.expenses, data.history);
   return data;
 }
 
@@ -117,7 +101,6 @@ export async function createHousehold(code: string, config: HouseholdConfig): Pr
       updatedAt: serverTimestamp(),
     });
   });
-  cacheData(code, [], []);
 }
 
 export async function joinHousehold(code: string): Promise<HouseholdData | null> {
@@ -157,24 +140,26 @@ export function subscribeToHousehold(
     const emit = () => {
       if (!meta || !ready.meta || !ready.expenses || !ready.history) return;
       const data = dataFromDocs(meta, expenses, history);
-      cacheData(code, data.expenses, data.history);
       onData(data);
     };
 
     unsubscribes = [
-      onSnapshot(doc(db, "households", code), snap => {
-        ready.meta = true;
-        if (!snap.exists()) return onDeleted();
+      onSnapshot(doc(db, "households", code), { includeMetadataChanges: true }, snap => {
+        if (!snap.metadata.fromCache) ready.meta = true;
+        if (!snap.exists()) {
+          if (!snap.metadata.fromCache) onDeleted();
+          return;
+        }
         meta = snap.data();
         emit();
       }, onError),
-      onSnapshot(expensesPath(db, code), snap => {
-        ready.expenses = true;
+      onSnapshot(expensesPath(db, code), { includeMetadataChanges: true }, snap => {
+        if (!snap.metadata.fromCache) ready.expenses = true;
         expenses = snap.docs.map(item => item.data() as Expense);
         emit();
       }, onError),
-      onSnapshot(historyPath(db, code), snap => {
-        ready.history = true;
+      onSnapshot(archivedMonthsPath(db, code), { includeMetadataChanges: true }, snap => {
+        if (!snap.metadata.fromCache) ready.history = true;
         history = snap.docs.map(item => item.data() as MonthSnapshot);
         emit();
       }, onError),
@@ -189,19 +174,14 @@ export function subscribeToHousehold(
 
 export async function pushHousehold(
   code: string,
-  data: Omit<HouseholdData, "updatedAt" | "memberUids">
+  data: Pick<HouseholdData, "config" | "actualIncome">
 ): Promise<void> {
   const db = getDb();
   const user = await ensureAnonymousAuth();
   if (!db) throw new Error("Firebase is not configured.");
   if (!user) throw new Error("Could not authenticate with Firebase.");
 
-  const cache = syncCaches.get(code) ?? { expenses: new Map(), history: new Map() };
-  const nextExpenses = new Map(data.expenses.map(item => [String(item.id), serialized(item)]));
-  const nextHistory = new Map(data.history.map(item => [item.yearMonth, serialized(item)]));
   const householdRef = doc(db, "households", code);
-  type RecordWrite = { ref: DocumentReference; value?: Expense | MonthSnapshot };
-  const writes: RecordWrite[] = [];
 
   // Subcollection rules require an existing member-owned parent. New households
   // establish that small parent before writing any child records.
@@ -215,32 +195,6 @@ export async function pushHousehold(
     });
   }
 
-  for (const item of data.expenses) {
-    const id = String(item.id);
-    if (cache.expenses.get(id) !== nextExpenses.get(id)) writes.push({ ref: doc(expensesPath(db, code), id), value: item });
-  }
-  for (const id of cache.expenses.keys()) {
-    if (!nextExpenses.has(id)) writes.push({ ref: doc(expensesPath(db, code), id) });
-  }
-  for (const item of data.history) {
-    const id = item.yearMonth;
-    if (cache.history.get(id) !== nextHistory.get(id)) writes.push({ ref: doc(historyPath(db, code), id), value: item });
-  }
-  for (const id of cache.history.keys()) {
-    if (!nextHistory.has(id)) writes.push({ ref: doc(historyPath(db, code), id) });
-  }
-
-  // Bound batches well below Firestore's 500-write limit, including large JSON
-  // imports and migrations from the former single-document representation.
-  for (let offset = 0; offset < writes.length; offset += 450) {
-    const recordsBatch = writeBatch(db);
-    for (const write of writes.slice(offset, offset + 450)) {
-      if (write.value) recordsBatch.set(write.ref, write.value);
-      else recordsBatch.delete(write.ref);
-    }
-    await recordsBatch.commit();
-  }
-
   const batch = writeBatch(db);
   // The household document stays small; high-growth records live separately.
   batch.set(householdRef, {
@@ -249,8 +203,6 @@ export async function pushHousehold(
     memberUids: arrayUnion(user.uid),
     updatedAt: serverTimestamp(),
     schemaVersion: 2,
-    expenses: deleteField(),
-    history: deleteField(),
   }, { merge: true });
   batch.set(doc(db, "householdInvites", code), {
     householdCode: code,
@@ -258,7 +210,56 @@ export async function pushHousehold(
     updatedAt: serverTimestamp(),
   }, { merge: true });
   await batch.commit();
-  syncCaches.set(code, { expenses: nextExpenses, history: nextHistory });
+}
+
+/** Writes one expense directly; Firestore, not React or localStorage, is authoritative. */
+export async function setExpense(code: string, expense: Expense): Promise<void> {
+  const db = getDb();
+  const user = await ensureAnonymousAuth();
+  if (!db) throw new Error("Firebase is not configured.");
+  if (!user) throw new Error("Could not authenticate with Firebase.");
+  await setDoc(doc(expensesPath(db, code), String(expense.id)), expense);
+}
+
+export async function deleteExpense(code: string, expenseId: number): Promise<void> {
+  const db = getDb();
+  const user = await ensureAnonymousAuth();
+  if (!db) throw new Error("Firebase is not configured.");
+  if (!user) throw new Error("Could not authenticate with Firebase.");
+  await deleteDoc(doc(expensesPath(db, code), String(expenseId)));
+}
+
+/** Archives the current month and replaces active expenses with next month's recurring records. */
+export async function archiveMonth(code: string, snapshot: MonthSnapshot, recurring: Expense[]): Promise<void> {
+  const db = getDb();
+  const user = await ensureAnonymousAuth();
+  if (!db) throw new Error("Firebase is not configured.");
+  if (!user) throw new Error("Could not authenticate with Firebase.");
+
+  const active = await getDocs(expensesPath(db, code));
+  const writes = [
+    ...active.docs.map(item => ({ ref: item.ref, value: null as Expense | null })),
+    ...recurring.map(item => ({ ref: doc(expensesPath(db, code), String(item.id)), value: item })),
+  ];
+  for (let offset = 0; offset < writes.length; offset += 450) {
+    const batch = writeBatch(db);
+    if (offset === 0) {
+      batch.set(doc(archivedMonthsPath(db, code), snapshot.yearMonth), snapshot);
+      batch.update(doc(db, "households", code), { actualIncome: null, updatedAt: serverTimestamp() });
+    }
+    for (const write of writes.slice(offset, offset + 450)) {
+      if (write.value) batch.set(write.ref, write.value);
+      else batch.delete(write.ref);
+    }
+    await batch.commit();
+  }
+  // An expense-free month still needs its archive and income reset committed.
+  if (writes.length === 0) {
+    const batch = writeBatch(db);
+    batch.set(doc(archivedMonthsPath(db, code), snapshot.yearMonth), snapshot);
+    batch.update(doc(db, "households", code), { actualIncome: null, updatedAt: serverTimestamp() });
+    await batch.commit();
+  }
 }
 
 /** Permanently removes the household and all client-owned subcollection data. */
@@ -270,7 +271,7 @@ export async function deleteHousehold(code: string): Promise<void> {
 
   const [expenseSnap, historySnap] = await Promise.all([
     getDocs(expensesPath(db, code)),
-    getDocs(historyPath(db, code)),
+    getDocs(archivedMonthsPath(db, code)),
   ]);
   const refs = [...expenseSnap.docs, ...historySnap.docs].map(item => item.ref);
   // Firestore batches allow at most 500 writes. Leave room for parent + invite.
@@ -284,5 +285,4 @@ export async function deleteHousehold(code: string): Promise<void> {
   // authorization lookup observe a missing parent and reject the whole batch.
   await deleteDoc(doc(db, "householdInvites", code));
   await deleteDoc(doc(db, "households", code));
-  syncCaches.delete(code);
 }
