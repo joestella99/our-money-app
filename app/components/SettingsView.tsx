@@ -16,7 +16,7 @@ type BackupData = {
 
 export function SettingsView({
   config, setConfig, expenses, setExpenses, history, setHistory,
-  actualIncome, setActualIncome, householdCode, onReset, onHome,
+  actualIncome, setActualIncome, householdCode, onDelete, onHome, syncError,
 }: {
   config: HouseholdConfig;
   setConfig: (c: HouseholdConfig) => void;
@@ -27,8 +27,9 @@ export function SettingsView({
   actualIncome: number | null;
   setActualIncome: (n: number | null) => void;
   householdCode: string | null;
-  onReset: () => void;
+  onDelete: () => Promise<void>;
   onHome: () => void;
+  syncError: string;
 }) {
   const [draft,        setDraft]        = useState<HouseholdConfig>(() => ({
     ...config, budgets: [...config.budgets], members: [...config.members],
@@ -40,6 +41,8 @@ export function SettingsView({
   const [confirmClose, setConfirmClose] = useState(false);
   const [showDelete,   setShowDelete]   = useState(false);
   const [deleteInput,  setDeleteInput]  = useState("");
+  const [deleting,     setDeleting]     = useState(false);
+  const [deleteError,  setDeleteError]  = useState("");
   const [importPreview, setImportPreview] = useState<BackupData | null>(null);
 
   function patch(p: Partial<HouseholdConfig>) { setDraft(d => ({ ...d, ...p })); }
@@ -116,6 +119,19 @@ export function SettingsView({
     setHistory(importPreview.history);
     setActualIncome(importPreview.actualIncome ?? null);
     setImportPreview(null);
+  }
+  async function confirmDelete() {
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await onDelete();
+      setShowDelete(false);
+      setDeleteInput("");
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Could not delete the household from Firebase.");
+    } finally {
+      setDeleting(false);
+    }
   }
   function closeMonth() {
     const ym = getYM();
@@ -265,6 +281,11 @@ export function SettingsView({
       <section className="settings-group" style={{ borderBottom: 0 }}>
         <div className="settings-label danger-label-text">Danger zone</div>
         <div className="danger-zone">
+          {syncError && (
+            <p role="alert" style={{ color: "#f87171", fontSize: "0.82rem", marginBottom: 14 }}>
+              Firebase sync failed: {syncError}
+            </p>
+          )}
           <p className="subtle" style={{ marginBottom: 14 }}>
             Permanently erase all expenses, history, and settings. This cannot be undone.
           </p>
@@ -326,18 +347,23 @@ export function SettingsView({
               autoFocus
               onKeyDown={e => {
                 if (e.key === "Enter" && deleteInput.toLowerCase() === `delete ${config.name.toLowerCase()}`) {
-                  setShowDelete(false); setDeleteInput(""); onReset();
+                  void confirmDelete();
                 }
               }}
             />
             <button
               className="danger-confirm-btn"
-              disabled={deleteInput.toLowerCase() !== `delete ${config.name.toLowerCase()}`}
-              onClick={() => { setShowDelete(false); setDeleteInput(""); onReset(); }}
+              disabled={deleting || deleteInput.toLowerCase() !== `delete ${config.name.toLowerCase()}`}
+              onClick={() => void confirmDelete()}
               style={{ marginTop: 18 }}
             >
-              Permanently delete everything
+              {deleting ? "Deleting from Firebase..." : "Permanently delete everything"}
             </button>
+            {deleteError && (
+              <p role="alert" style={{ color: "#f87171", fontSize: "0.82rem", marginTop: 12 }}>
+                {deleteError} Nothing was removed from this device.
+              </p>
+            )}
           </div>
         </div>
       )}

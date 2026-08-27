@@ -51,7 +51,14 @@ service cloud.firestore {
     match /householdInvites/{code} {
       allow get: if signedIn();
       allow list: if false;
-      allow create, update, delete: if householdMember(code);
+      allow create, update: if householdMember(code);
+
+      // The client deletes the invite and household in the same batch. Check
+      // membership against the existing household so an owner can remove both
+      // documents atomically without leaving a reusable invite behind.
+      allow delete: if signedIn()
+        && exists(/databases/$(database)/documents/households/$(code))
+        && request.auth.uid in get(/databases/$(database)/documents/households/$(code)).data.memberUids;
     }
 
     match /{document=**} {

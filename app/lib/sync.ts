@@ -5,6 +5,7 @@ import {
   onSnapshot,
   setDoc,
   updateDoc,
+  writeBatch,
 } from "firebase/firestore";
 import { ensureAnonymousAuth, getDb } from "./firebase";
 import type { HouseholdConfig, Expense, MonthSnapshot } from "./types";
@@ -64,7 +65,9 @@ export async function joinHousehold(code: string): Promise<HouseholdData | null>
 
 export function subscribeToHousehold(
   code: string,
-  onData: (data: HouseholdData) => void
+  onData: (data: HouseholdData) => void,
+  onDeleted: () => void,
+  onError: (error: Error) => void
 ): () => void {
   const db = getDb();
   if (!db) return () => {};
@@ -77,9 +80,13 @@ export function subscribeToHousehold(
     unsubscribe = onSnapshot(
       doc(db, "households", code),
       snap => {
-        if (snap.exists()) onData(snap.data() as HouseholdData);
+        if (snap.exists()) {
+          onData(snap.data() as HouseholdData);
+        } else {
+          onDeleted();
+        }
       },
-      error => console.error("Household sync subscription failed", error)
+      error => onError(error)
     );
   });
 
@@ -95,7 +102,8 @@ export async function pushHousehold(
 ): Promise<void> {
   const db = getDb();
   const user = await ensureAnonymousAuth();
-  if (!db || !user) return;
+  if (!db) throw new Error("Firebase is not configured.");
+  if (!user) throw new Error("Could not authenticate with Firebase.");
 
   const householdRef = doc(db, "households", code);
   const inviteRef = doc(db, "householdInvites", code);
@@ -114,4 +122,17 @@ export async function pushHousehold(
     { householdCode: code, active: true, updatedAt: Date.now() },
     { merge: true }
   );
+}
+
+/** Permanently removes both documents in one atomic Firestore write. */
+export async function deleteHousehold(code: string): Promise<void> {
+  const db = getDb();
+  const user = await ensureAnonymousAuth();
+  if (!db) throw new Error("Firebase is not configured.");
+  if (!user) throw new Error("Could not authenticate with Firebase.");
+
+  const batch = writeBatch(db);
+  batch.delete(doc(db, "householdInvites", code));
+  batch.delete(doc(db, "households", code));
+  await batch.commit();
 }
