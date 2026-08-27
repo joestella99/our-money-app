@@ -29,6 +29,7 @@ export function DashView({
   const [showAll,   setShowAll]   = useState(false);
   const [editing,   setEditing]   = useState<Expense | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [expenseError, setExpenseError] = useState("");
 
   // Use actual income if set for the month, otherwise fall back to config default
   const effectiveIncome = actualIncome ?? config.monthlyTakeHome;
@@ -115,8 +116,13 @@ export function DashView({
       await setExpense(householdCode, expense);
       setExpenses(current => [expense, ...current.filter(item => item.id !== expense.id)]);
       onSyncError("");
+      setExpenseError("");
     } catch (error) {
-      onSyncError(error instanceof Error ? error.message : "Could not save expense.");
+      console.error("Firebase expense save failed", error);
+      const message = error instanceof Error ? error.message : "Could not save expense.";
+      onSyncError(message);
+      setExpenseError(message);
+      throw error;
     }
   }
   async function deleteExpense(id: number) {
@@ -125,12 +131,14 @@ export function DashView({
       setExpenses(current => current.filter(item => item.id !== id));
       onSyncError("");
     } catch (error) {
-      onSyncError(error instanceof Error ? error.message : "Could not delete expense.");
+      console.error("Firebase expense delete failed", error);
+      const message = error instanceof Error ? error.message : "Could not delete expense.";
+      onSyncError(message);
+      setExpenseError(message);
     }
   }
-  function saveEdit(updated: Expense) { void persistExpense(updated); }
   function duplicateExpense(e: Expense) {
-    void persistExpense({ ...e, id: Date.now(), date: todayISO() });
+    void persistExpense({ ...e, id: Date.now(), date: todayISO() }).catch(() => {});
   }
   function dismiss(cat: string)         { setDismissed(prev => new Set([...prev, cat])); }
 
@@ -271,6 +279,7 @@ export function DashView({
           <button className="text-button" onClick={() => setShowAll(true)}>See all</button>
         </div>
         <div className="transaction-list">
+          {expenseError && <p className="form-error" role="alert">Firebase error: {expenseError}</p>}
           {expenses.length === 0
             ? <p className="empty-state">No expenses yet &mdash; tap Add expense to get started.</p>
             : expenses.slice(0, 5).map(e => (
@@ -288,7 +297,7 @@ export function DashView({
 
       {showAdd && (
         <ExpenseFormSheet config={config}
-          onSave={e => { void persistExpense(e); setShowAdd(false); }} onClose={() => setShowAdd(false)} />
+          onSave={persistExpense} onClose={() => setShowAdd(false)} />
       )}
       {showAll && (
         <AllSheet expenses={expenses}
@@ -297,7 +306,7 @@ export function DashView({
       )}
       {editing && (
         <ExpenseFormSheet config={config} initial={editing}
-          onSave={e => { saveEdit(e); setEditing(null); }} onClose={() => setEditing(null)} />
+          onSave={persistExpense} onClose={() => setEditing(null)} />
       )}
     </>
   );

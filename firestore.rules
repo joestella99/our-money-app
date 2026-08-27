@@ -60,6 +60,12 @@ service cloud.firestore {
       match /archivedMonths/{yearMonth} {
         allow read, write: if householdMember(code);
       }
+
+      // Member-only access is retained solely so clients can migrate and then
+      // delete documents created by the previous normalized schema.
+      match /history/{yearMonth} {
+        allow read, write: if householdMember(code);
+      }
     }
 
     // Invite docs contain no financial information and cannot be listed.

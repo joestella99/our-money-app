@@ -1,4 +1,4 @@
-const CACHE_NAME = "our-money-v1";
+const CACHE_NAME = "our-money-v2-firestore-safe";
 const APP_SHELL = ["/", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
