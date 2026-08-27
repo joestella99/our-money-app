@@ -44,6 +44,16 @@ service cloud.firestore {
       allow delete: if signedIn()
         && ('memberUids' in resource.data)
         && request.auth.uid in resource.data.memberUids;
+
+      // Growing data is normalized into subcollections. This avoids the 1 MiB
+      // parent-document ceiling and lets clients update only the record changed.
+      match /expenses/{expenseId} {
+        allow read, write: if householdMember(code);
+      }
+
+      match /history/{yearMonth} {
+        allow read, write: if householdMember(code);
+      }
     }
 
     // Invite docs contain no financial information and cannot be listed.

@@ -12,6 +12,8 @@ A private, mobile-first household expense app built with Next.js + Firebase.
 - Rolls recurring expenses into the next month when you archive
 - Makes **Safe to spend** reserve the rest of your category budgets first
 - Adds a 50/50 settle-up card for two-person households
+- Stores expenses and monthly history as separate Firestore records so routine
+  edits do not rewrite the household's entire history or hit the 1 MiB document limit
 
 ## Run locally
 
@@ -50,6 +52,18 @@ firebase deploy --only firestore:rules
 ```
 
 **Do not leave Firestore in test mode for real financial data.**
+
+## Database storage design
+
+To make a small Firestore quota last, the `households/{code}` document contains
+only configuration, income, membership, and sync metadata. Current expenses are
+stored at `households/{code}/expenses/{id}` and archived months at
+`households/{code}/history/{yearMonth}`. Sync compares records and writes only
+the ones that changed. Deleting a household also deletes these records in safe,
+bounded batches, so removed households do not continue using database storage.
+
+Existing array-based households migrate automatically on their next successful
+sync: records are copied to the subcollections and the old arrays are removed.
 
 ### Existing household migration
 
