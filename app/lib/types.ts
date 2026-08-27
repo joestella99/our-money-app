@@ -5,8 +5,8 @@ export type Expense = {
   category: string;
   paidBy: string;
   date: string;
-  recurring?: boolean;
-  note?: string;
+  recurring: boolean;
+  note: string;
 };
 
 export type BudgetLine = { category: string; amount: number };
@@ -23,7 +23,7 @@ export type MonthSnapshot = {
   yearMonth: string;
   config: HouseholdConfig;
   expenses: Expense[];
-  actualIncome?: number;
+  actualIncome: number | null;
 };
 
 export type SortKey = "date-desc" | "date-asc" | "amount-desc" | "amount-asc";

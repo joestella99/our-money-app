@@ -12,7 +12,7 @@ export function ExpenseFormSheet({
 }: {
   config: HouseholdConfig;
   initial?: Expense;
-  onSave: (e: Expense) => void;
+  onSave: (e: Expense) => Promise<void | boolean>;
   onClose: () => void;
 }) {
   const isEdit    = !!initial;
@@ -23,8 +23,10 @@ export function ExpenseFormSheet({
   const [date,      setDate]      = useState(initial?.date ?? todayISO());
   const [note,      setNote]      = useState(initial?.note ?? "");
   const [recurring, setRecurring] = useState(initial?.recurring ?? false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
-  function submit() {
+  async function submit() {
     const a = Number(amount);
     const missing: string[] = [];
     if (!Number.isFinite(a) || a <= 0) missing.push("an amount greater than $0");
@@ -36,25 +38,34 @@ export function ExpenseFormSheet({
       window.alert(`Please add ${missing.join(", ")} before saving this expense.`);
       return;
     }
-    onSave({
+    setSaving(true);
+    setSaveError("");
+    try {
+      const saved = await onSave({
       id:          initial?.id ?? Date.now(),
       amount:      a,
       description: desc.trim(),
       category:    cat,
       paidBy,
       date,
-      note:        note.trim() || undefined,
-      recurring:   recurring || undefined,
-    });
-    onClose();
+        note:        note.trim(),
+        recurring,
+      });
+      if (saved !== false) onClose();
+    } catch (error) {
+      console.error("Firebase expense write failed", error);
+      setSaveError(error instanceof Error ? error.message : "Could not save expense to Firebase.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
+    <div className="overlay" onClick={() => { if (!saving) onClose(); }}>
       <div className="sheet" onClick={e => e.stopPropagation()}>
         <div className="sheet-header">
           <h2>{isEdit ? "Edit expense" : "Add expense"}</h2>
-          <button className="pill-button" onClick={onClose}>Close</button>
+          <button className="pill-button" disabled={saving} onClick={onClose}>Close</button>
         </div>
 
         <label>Amount</label>
@@ -122,8 +133,9 @@ export function ExpenseFormSheet({
           </button>
         </div>
 
-        <button className="primary-action full" onClick={submit}>
-          {isEdit ? "Save changes" : "Add expense"}
+        {saveError && <p className="form-error" role="alert">{saveError}</p>}
+        <button className="primary-action full" disabled={saving} onClick={() => void submit()}>
+          {saving ? "Saving..." : isEdit ? "Save changes" : "Add expense"}
         </button>
       </div>
     </div>

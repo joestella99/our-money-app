@@ -3,8 +3,7 @@
 import { useState } from "react";
 import type { Expense, HouseholdConfig, MonthSnapshot } from "../lib/types";
 import { getYM, labelYM, exportCSV, money, nextMonthISO } from "../lib/utils";
-import { save, KEY_CONFIG, KEY_HISTORY, KEY_EXPENSES, KEY_ACTUAL_INCOME } from "../lib/storage";
-import { archiveMonth } from "../lib/sync";
+import { archiveMonth, restoreHousehold } from "../lib/sync";
 
 type BackupData = {
   version: number;
@@ -45,6 +44,8 @@ export function SettingsView({
   const [deleting,     setDeleting]     = useState(false);
   const [deleteError,  setDeleteError]  = useState("");
   const [importPreview, setImportPreview] = useState<BackupData | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState("");
 
   function patch(p: Partial<HouseholdConfig>) { setDraft(d => ({ ...d, ...p })); }
 
@@ -127,17 +128,16 @@ export function SettingsView({
     input.click();
   }
 
-  function confirmImport() {
-    if (!importPreview) return;
-    save(KEY_CONFIG,       importPreview.config);
-    save(KEY_EXPENSES,     importPreview.expenses);
-    save(KEY_HISTORY,      importPreview.history);
-    save(KEY_ACTUAL_INCOME, importPreview.actualIncome ?? null);
-    setConfig(importPreview.config);
-    setExpenses(importPreview.expenses);
-    setHistory(importPreview.history);
-    setActualIncome(importPreview.actualIncome ?? null);
-    setImportPreview(null);
+  async function confirmImport() {
+    if (!importPreview || !householdCode) return;
+    setImporting(true); setImportError("");
+    try {
+      await restoreHousehold(householdCode, { ...importPreview, actualIncome: importPreview.actualIncome ?? null });
+      setImportPreview(null);
+    } catch (error) {
+      console.error("Firebase backup restore failed", error);
+      setImportError(error instanceof Error ? error.message : "Could not restore backup to Firebase.");
+    } finally { setImporting(false); }
   }
   async function confirmDelete() {
     setDeleting(true);
@@ -159,7 +159,7 @@ export function SettingsView({
       yearMonth:    ym,
       config,
       expenses,
-      actualIncome: actualIncome ?? undefined,
+      actualIncome,
     };
     const newHist = [snap, ...history.filter(h => h.yearMonth !== ym)];
 
@@ -175,9 +175,6 @@ export function SettingsView({
 
     try {
       await archiveMonth(householdCode, snap, recurringNextMonth);
-      save(KEY_HISTORY,       newHist);
-      save(KEY_EXPENSES,      recurringNextMonth);
-      save(KEY_ACTUAL_INCOME, null);
       setHistory(newHist);
       setExpenses(recurringNextMonth);
       setActualIncome(null);
@@ -347,8 +344,9 @@ export function SettingsView({
               <div className="import-row"><span>Archived months</span><strong>{importPreview.history.length}</strong></div>
               <div className="import-row"><span>Exported</span><strong>{new Date(importPreview.exportedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</strong></div>
             </div>
-            <button className="primary-action full" style={{ marginTop: 24 }} onClick={confirmImport}>
-              Yes, import this backup
+            {importError && <p className="form-error" role="alert">{importError}</p>}
+            <button className="primary-action full" disabled={importing} style={{ marginTop: 24 }} onClick={() => void confirmImport()}>
+              {importing ? "Restoring Firebase..." : "Yes, import this backup"}
             </button>
           </div>
         </div>
