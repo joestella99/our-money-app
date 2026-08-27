@@ -9,7 +9,7 @@ import {
 import type { HouseholdConfig, Expense, MonthSnapshot, HouseholdEntry } from "./lib/types";
 import { getYM } from "./lib/utils";
 import { isFirebaseConfigured } from "./lib/firebase";
-import { subscribeToHousehold, pushHousehold, type SetupResult } from "./lib/sync";
+import { deleteHousehold, subscribeToHousehold, pushHousehold, type SetupResult } from "./lib/sync";
 import { HomeScreen }   from "./components/HomeScreen";
 import { SetupScreen }  from "./components/SetupScreen";
 import { DashView }     from "./components/DashView";
@@ -29,6 +29,7 @@ export default function HomePage() {
   const [history,       setHistory]       = useState<MonthSnapshot[]>([]);
   const [actualIncome,  setActualIncome]  = useState<number | null>(null);
   const [tab,           setTab]           = useState<"dash" | "history" | "settings">("dash");
+  const [syncError,     setSyncError]     = useState("");
 
   const lastFirestoreMs = useRef(0);
   const lastPushMs      = useRef(0);
@@ -68,18 +69,27 @@ export default function HomePage() {
   // ── Firestore subscription ─────────────────────────────────────────────────
   useEffect(() => {
     if (!hydrated || !householdCode || !isFirebaseConfigured()) return;
-    const unsub = subscribeToHousehold(householdCode, (remote) => {
-      if (remote.updatedAt <= lastPushMs.current) return;
-      lastFirestoreMs.current = Date.now();
-      setConfig(remote.config);
-      setExpenses(remote.expenses);
-      setHistory(remote.history);
-      setActualIncome(remote.actualIncome);
-      save(KEY_CONFIG,        remote.config);
-      save(KEY_EXPENSES,      remote.expenses);
-      save(KEY_HISTORY,       remote.history);
-      save(KEY_ACTUAL_INCOME, remote.actualIncome);
-    });
+    const unsub = subscribeToHousehold(
+      householdCode,
+      (remote) => {
+        if (remote.updatedAt <= lastPushMs.current) return;
+        lastFirestoreMs.current = Date.now();
+        setSyncError("");
+        setConfig(remote.config);
+        setExpenses(remote.expenses);
+        setHistory(remote.history);
+        setActualIncome(remote.actualIncome);
+        save(KEY_CONFIG,        remote.config);
+        save(KEY_EXPENSES,      remote.expenses);
+        save(KEY_HISTORY,       remote.history);
+        save(KEY_ACTUAL_INCOME, remote.actualIncome);
+      },
+      () => {
+        clearLocalHousehold(householdCode);
+        alert("This household was deleted from another device.");
+      },
+      error => setSyncError(error.message || "Household sync failed.")
+    );
     return unsub;
   }, [hydrated, householdCode]);
 
@@ -89,7 +99,9 @@ export default function HomePage() {
     const timer = setTimeout(() => {
       if (Date.now() - lastFirestoreMs.current < 2000) return;
       lastPushMs.current = Date.now();
-      pushHousehold(householdCode, { config, expenses, history, actualIncome }).catch(console.error);
+      pushHousehold(householdCode, { config, expenses, history, actualIncome })
+        .then(() => setSyncError(""))
+        .catch(error => setSyncError(error instanceof Error ? error.message : "Could not save to Firebase."));
     }, 1500);
     return () => clearTimeout(timer);
   }, [expenses, config, history, actualIncome, householdCode, hydrated, mode]);
@@ -182,16 +194,32 @@ export default function HomePage() {
     if (code === householdCode) goHome();
   }
 
-  function resetHousehold() {
-    localStorage.clear();
+  function clearLocalHousehold(code: string) {
+    setHouseholds(current => {
+      const updated = current.filter(h => h.code !== code);
+      save(KEY_HOUSEHOLDS_LIST, updated);
+      return updated;
+    });
+    save(KEY_HOUSEHOLD, null);
+    localStorage.removeItem(KEY_CONFIG);
+    localStorage.removeItem(KEY_EXPENSES);
+    localStorage.removeItem(KEY_HISTORY);
+    localStorage.removeItem(KEY_MONTH);
+    localStorage.removeItem(KEY_ACTUAL_INCOME);
     setConfig(null);
     setExpenses([]);
     setHistory([]);
     setActualIncome(null);
     setHouseholdCode(null);
-    setHouseholds([]);
     setMode("home");
     setTab("dash");
+    setSyncError("");
+  }
+
+  async function permanentlyDeleteHousehold() {
+    if (!householdCode) throw new Error("No household is selected.");
+    await deleteHousehold(householdCode);
+    clearLocalHousehold(householdCode);
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -255,8 +283,9 @@ export default function HomePage() {
             actualIncome={actualIncome}
             setActualIncome={setActualIncome}
             householdCode={householdCode}
-            onReset={resetHousehold}
+            onDelete={permanentlyDeleteHousehold}
             onHome={goHome}
+            syncError={syncError}
           />
         )}
       </div>
