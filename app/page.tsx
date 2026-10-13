@@ -9,8 +9,9 @@ import {
 } from "./lib/storage";
 import type { HouseholdConfig, Expense, MonthSnapshot, HouseholdEntry } from "./lib/types";
 import { getYM } from "./lib/utils";
+import { dateInMonth, followingMonth } from "./lib/insights";
 import { isFirebaseConfigured } from "./lib/firebase";
-import { createHousehold, deleteHousehold, subscribeToHousehold, pushHousehold, type SetupResult } from "./lib/sync";
+import { createHousehold, deleteHousehold, subscribeToHousehold, pushHousehold, archiveMonth, initializeActiveMonth, type SetupResult } from "./lib/sync";
 import { HomeScreen }   from "./components/HomeScreen";
 import { SetupScreen }  from "./components/SetupScreen";
 import { DashView }     from "./components/DashView";
@@ -29,6 +30,8 @@ export default function HomePage() {
   const [expenses,      setExpenses]      = useState<Expense[]>([]);
   const [history,       setHistory]       = useState<MonthSnapshot[]>([]);
   const [actualIncome,  setActualIncome]  = useState<number | null>(null);
+  const [activeMonth,   setActiveMonth]   = useState<string | null>(null);
+  const [monthBusy,     setMonthBusy]     = useState(false);
   const [tab,           setTab]           = useState<"dash" | "history" | "settings">("dash");
   const [syncError,     setSyncError]     = useState("");
   const [syncRetry,     setSyncRetry]     = useState(0);
@@ -83,6 +86,7 @@ export default function HomePage() {
         setExpenses(current => JSON.stringify(current) === JSON.stringify(remote.expenses) ? current : remote.expenses);
         setHistory(current => JSON.stringify(current) === JSON.stringify(remote.history) ? current : remote.history);
         setActualIncome(remote.actualIncome);
+        setActiveMonth(remote.activeMonth);
         saveHousehold(householdCode, KEY_CONFIG,        remote.config);
         saveHousehold(householdCode, KEY_EXPENSES,      remote.expenses);
         saveHousehold(householdCode, KEY_HISTORY,       remote.history);
@@ -140,6 +144,7 @@ export default function HomePage() {
     setExpenses([]);
     setHistory([]);
     setActualIncome(null);
+    setActiveMonth(null);
     setRemoteReady(false);
     setTab("dash");
   }
@@ -153,6 +158,7 @@ export default function HomePage() {
     setExpenses(loadHousehold<Expense[]>(entry.code, KEY_EXPENSES, []));
     setHistory(loadHousehold<MonthSnapshot[]>(entry.code, KEY_HISTORY, []));
     setActualIncome(loadHousehold<number | null>(entry.code, KEY_ACTUAL_INCOME, null));
+    setActiveMonth(null);
 
     // Handle month rollover for the selected household
     const prev  = loadHousehold<string>(entry.code, KEY_MONTH, "");
@@ -183,11 +189,13 @@ export default function HomePage() {
         setExpenses([]);
         setHistory([]);
         setActualIncome(null);
+        setActiveMonth(getYM());
       } else {
         setConfig(result.data.config);
         setExpenses(result.data.expenses);
         setHistory(result.data.history);
         setActualIncome(result.data.actualIncome);
+        setActiveMonth(result.data.activeMonth);
         saveHousehold(code, KEY_CONFIG,        result.data.config);
         saveHousehold(code, KEY_EXPENSES,      result.data.expenses);
         saveHousehold(code, KEY_HISTORY,       result.data.history);
@@ -233,6 +241,7 @@ export default function HomePage() {
     setExpenses([]);
     setHistory([]);
     setActualIncome(null);
+    setActiveMonth(null);
     setHouseholdCode(null);
     setRemoteReady(false);
     setMode("home");
@@ -244,6 +253,41 @@ export default function HomePage() {
     if (!householdCode) throw new Error("No household is selected.");
     await deleteHousehold(householdCode);
     clearLocalHousehold(householdCode);
+  }
+
+  async function startTrackingCurrentMonth() {
+    if (!householdCode || !remoteReady) throw new Error("Household is not synced yet.");
+    setMonthBusy(true);
+    try {
+      await initializeActiveMonth(householdCode, getYM());
+      setActiveMonth(getYM());
+    } finally {
+      setMonthBusy(false);
+    }
+  }
+
+  async function handleArchiveMonth() {
+    if (!householdCode || !config || !remoteReady || monthBusy) {
+      throw new Error("Wait for household sync before archiving.");
+    }
+    const sourceMonth = activeMonth ?? getYM();
+    const nextMonth = sourceMonth < getYM() ? getYM() : followingMonth(sourceMonth);
+    const snapshot: MonthSnapshot = { yearMonth: sourceMonth, config, expenses, actualIncome };
+    const recurring = expenses.filter(item => item.recurring).map((item, index) => ({
+      ...item,
+      id: Date.now() + index,
+      date: dateInMonth(item.date, nextMonth),
+    }));
+    setMonthBusy(true);
+    try {
+      await archiveMonth(householdCode, snapshot, recurring, nextMonth);
+      setHistory(current => [snapshot, ...current.filter(item => item.yearMonth !== sourceMonth)]);
+      setExpenses(recurring);
+      setActualIncome(null);
+      setActiveMonth(nextMonth);
+    } finally {
+      setMonthBusy(false);
+    }
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -299,6 +343,11 @@ export default function HomePage() {
             expenses={expenses}
             setExpenses={setExpenses}
             actualIncome={actualIncome}
+            history={history}
+            activeMonth={activeMonth}
+            monthBusy={monthBusy}
+            onStartTracking={startTrackingCurrentMonth}
+            onArchiveMonth={handleArchiveMonth}
             householdCode={householdCode!}
             onSyncError={setSyncError}
             onHome={goHome}
@@ -317,6 +366,9 @@ export default function HomePage() {
             setHistory={setHistory}
             actualIncome={actualIncome}
             setActualIncome={setActualIncome}
+            activeMonth={activeMonth}
+            monthBusy={monthBusy}
+            onArchiveMonth={handleArchiveMonth}
             householdCode={householdCode}
             onDelete={permanentlyDeleteHousehold}
             onHome={goHome}
