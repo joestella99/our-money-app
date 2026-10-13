@@ -6,6 +6,7 @@ import {
   doc,
   getDocs,
   getDoc,
+  increment,
   onSnapshot,
   runTransaction,
   serverTimestamp,
@@ -18,6 +19,7 @@ import {
 import { ensureAnonymousAuth, getDb } from "./firebase";
 import type { HouseholdConfig, Expense, MonthSnapshot } from "./types";
 import { getYM } from "./utils";
+import { dateInMonth } from "./insights";
 
 export type HouseholdData = {
   config: HouseholdConfig;
@@ -148,6 +150,7 @@ export async function createHousehold(code: string, config: HouseholdConfig): Pr
       config,
       actualIncome: null,
       activeMonth: getYM(),
+      expenseRevision: 0,
       memberUids: [user.uid],
       updatedAt: serverTimestamp(),
       schemaVersion: 2,
@@ -171,6 +174,7 @@ export async function joinHousehold(code: string): Promise<HouseholdData | null>
     // Rules validate either the invite or the legacy-household migration case.
     await updateDoc(householdRef, { memberUids: arrayUnion(user.uid) });
     await migrateLegacyData(db, cleanCode);
+    await initializeActiveMonth(db, cleanCode);
     return await readHousehold(db, cleanCode);
   } catch (error) {
     console.error("Could not join household", error);
@@ -192,6 +196,7 @@ export function subscribeToHousehold(
   ensureAnonymousAuth().then(async user => {
     if (!user || cancelled) return;
     await migrateLegacyData(db, code);
+    await initializeActiveMonth(db, code);
     if (cancelled) return;
     let meta: DocumentData | null = null;
     let expenses: Expense[] = [];
@@ -250,6 +255,7 @@ export async function pushHousehold(
       config: data.config,
       actualIncome: data.actualIncome,
       activeMonth: getYM(),
+      expenseRevision: 0,
       memberUids: [user.uid],
       updatedAt: serverTimestamp(),
       schemaVersion: 2,
@@ -274,20 +280,42 @@ export async function pushHousehold(
 }
 
 /** Writes one expense directly; Firestore, not React or localStorage, is authoritative. */
-export async function setExpense(code: string, expense: Expense): Promise<void> {
+/**
+ * All expense writes and month rolls update the same parent document in a
+ * transaction, so they cannot race unnoticed across a pair of devices.
+ */
+export async function setExpense(code: string, expense: Expense, expectedMonth: string): Promise<void> {
   const db = getDb();
   const user = await ensureAnonymousAuth();
-  if (!db) throw new Error("Firebase is not configured.");
-  if (!user) throw new Error("Could not authenticate with Firebase.");
-  await setDoc(doc(expensesPath(db, code), String(expense.id)), normalizeExpense(expense));
+  if (!db || !user) throw new Error("Could not connect to Firebase.");
+  const parentRef = doc(db, "households", code);
+  const expenseRef = doc(expensesPath(db, code), String(expense.id));
+  await runTransaction(db, async transaction => {
+    const parent = await transaction.get(parentRef);
+    if (!parent.exists()) throw new Error("Household no longer exists.");
+    if (parent.data().activeMonth !== expectedMonth) {
+      throw new Error("The month changed. Refresh before saving this expense.");
+    }
+    transaction.set(expenseRef, normalizeExpense(expense));
+    transaction.update(parentRef, { expenseRevision: increment(1) });
+  });
 }
 
-export async function deleteExpense(code: string, expenseId: number): Promise<void> {
+export async function deleteExpense(code: string, expenseId: number, expectedMonth: string): Promise<void> {
   const db = getDb();
   const user = await ensureAnonymousAuth();
-  if (!db) throw new Error("Firebase is not configured.");
-  if (!user) throw new Error("Could not authenticate with Firebase.");
-  await deleteDoc(doc(expensesPath(db, code), String(expenseId)));
+  if (!db || !user) throw new Error("Could not connect to Firebase.");
+  const parentRef = doc(db, "households", code);
+  const expenseRef = doc(expensesPath(db, code), String(expenseId));
+  await runTransaction(db, async transaction => {
+    const parent = await transaction.get(parentRef);
+    if (!parent.exists()) throw new Error("Household no longer exists.");
+    if (parent.data().activeMonth !== expectedMonth) {
+      throw new Error("The month changed. Refresh before deleting this expense.");
+    }
+    transaction.delete(expenseRef);
+    transaction.update(parentRef, { expenseRevision: increment(1) });
+  });
 }
 
 export type RestoreData = Pick<HouseholdData, "config" | "expenses" | "history" | "actualIncome">;
@@ -330,72 +358,103 @@ export async function restoreHousehold(code: string, input: RestoreData): Promis
   }));
 }
 
-/** Archives the current month and replaces active expenses with next month's recurring records. */
-export async function initializeActiveMonth(code: string, month: string): Promise<void> {
-  const db = getDb();
-  const user = await ensureAnonymousAuth();
-  if (!db || !user) throw new Error("Firebase is not available.");
+/**
+ * Existing households are automatically enrolled on first sync. If their
+ * active expenses are dated in an earlier month, prefer the most recently
+ * recorded non-future month so that the next archive captures those expenses.
+ * Never overwrite an activeMonth already chosen by another device.
+ */
+async function initializeActiveMonth(db: Firestore, code: string): Promise<void> {
+  const householdRef = doc(db, "households", code);
+  const current = await getDoc(householdRef);
+  if (!current.exists() || typeof current.data().activeMonth === "string") return;
+
+  const expenses = await getDocs(expensesPath(db, code));
+  const today = getYM();
+  const dates = expenses.docs.map(item => item.data().date)
+    .filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .map(date => date.slice(0, 7)).filter(month => month <= today).sort();
+  const inferred = dates.length ? dates[dates.length - 1] : today;
+
   await runTransaction(db, async transaction => {
-    const ref = doc(db, "households", code);
-    const snap = await transaction.get(ref);
-    if (!snap.exists()) throw new Error("Household no longer exists.");
-    if (snap.data().activeMonth && snap.data().activeMonth !== month) {
-      throw new Error("Another device already started tracking a different month. Refresh first.");
-    }
-    if (!snap.data().activeMonth) {
-      transaction.update(ref, { activeMonth: month, updatedAt: serverTimestamp() });
+    const parent = await transaction.get(householdRef);
+    if (!parent.exists()) throw new Error("Household no longer exists.");
+    if (!parent.data().activeMonth) {
+      transaction.update(householdRef, {
+        activeMonth: inferred,
+        expenseRevision: Number(parent.data().expenseRevision ?? 0),
+        updatedAt: serverTimestamp(),
+      });
     }
   });
 }
 
-/** Archives one month and prepares the next month's recurring records. */
-export async function archiveMonth(code: string, snapshot: MonthSnapshot, recurring: Expense[], nextMonth: string): Promise<void> {
+export type ArchiveResult = { snapshot: MonthSnapshot; recurring: Expense[] };
+
+/**
+ * Capture the current source records at archive time, atomically clear the
+ * month and carry forward recurring entries. Version checks serialize archive
+ * with expense adds/edits/deletes on every current client.
+ */
+export async function archiveMonth(code: string, sourceMonth: string, nextMonth: string): Promise<ArchiveResult> {
   const db = getDb();
   const user = await ensureAnonymousAuth();
-  if (!db) throw new Error("Firebase is not configured.");
-  if (!user) throw new Error("Could not authenticate with Firebase.");
-  if (nextMonth <= snapshot.yearMonth) throw new Error("The next month must be after the archived month.");
+  if (!db || !user) throw new Error("Could not connect to Firebase.");
+  if (nextMonth <= sourceMonth) throw new Error("Cannot archive into the same or an earlier month.");
 
-  // Read the active records first, then commit the entire transition atomically.
-  // No partial month rollover is possible: if we cannot commit, the old month
-  // remains intact and a later app visit can retry safely.
-  const active = await getDocs(expensesPath(db, code));
-  // Never archive a stale local snapshot if another device has changed the
-  // active set since the last Firestore subscription update.
-  const capturedIds = new Set(snapshot.expenses.map(item => String(item.id)));
-  if (capturedIds.size !== active.size || active.docs.some(item => !capturedIds.has(item.id))) {
-    throw new Error("Expenses changed on another device. Refresh and retry the archive.");
-  }
   const parentRef = doc(db, "households", code);
-  const archiveRef = doc(archivedMonthsPath(db, code), snapshot.yearMonth);
-  const writesNeeded = active.size + recurring.length + 2;
-  // Firestore transactions have a 500 write limit. Keep some headroom.
-  if (writesNeeded > 450) {
-    throw new Error("This month has too many entries to archive safely in one operation. Export a backup and contact support before continuing.");
+  const archiveRef = doc(archivedMonthsPath(db, code), sourceMonth);
+  const before = await getDoc(parentRef);
+  if (!before.exists()) throw new Error("Household no longer exists.");
+  const beforeRevision = Number(before.data().expenseRevision ?? 0);
+  const active = await getDocs(expensesPath(db, code));
+  const after = await getDoc(parentRef);
+  if (!after.exists()) throw new Error("Household no longer exists.");
+  if (Number(after.data().expenseRevision ?? 0) !== beforeRevision) {
+    throw new Error("Expenses changed during rollover. Try again after syncing.");
   }
 
+  const sourceExpenses = active.docs.map(item => normalizeExpense(item.data()));
+  const recurring = sourceExpenses.filter(item => item.recurring).map((item, index) => ({
+    ...item,
+    id: Date.now() + index,
+    date: dateInMonth(item.date, nextMonth),
+  }));
+  if (active.size + recurring.length + 2 > 450) {
+    throw new Error("Too many expenses to archive safely in one transaction. Export a backup first.");
+  }
+  let snapshot: MonthSnapshot | null = null;
   await runTransaction(db, async transaction => {
-    const parent = await transaction.get(parentRef);
-    const archive = await transaction.get(archiveRef);
+    const [parent, existingArchive] = await Promise.all([
+      transaction.get(parentRef), transaction.get(archiveRef),
+    ]);
     if (!parent.exists()) throw new Error("Household no longer exists.");
-    if (parent.data().activeMonth && parent.data().activeMonth !== snapshot.yearMonth) {
-      throw new Error("This month changed on another device. Refresh to see the latest data.");
+    if (parent.data().activeMonth !== sourceMonth) {
+      throw new Error("The month was already changed by another device. Refresh to see the new month.");
     }
-    if (archive.exists()) {
-      throw new Error("This month has already been archived on another device.");
+    if (existingArchive.exists()) throw new Error("This month has already been archived.");
+    if (Number(parent.data().expenseRevision ?? 0) !== beforeRevision) {
+      throw new Error("Expenses changed during rollover. Try again after syncing.");
     }
 
+    snapshot = {
+      yearMonth: sourceMonth,
+      config: parent.data().config as HouseholdConfig,
+      actualIncome: typeof parent.data().actualIncome === "number" ? parent.data().actualIncome : null,
+      expenses: sourceExpenses,
+    };
     transaction.set(archiveRef, normalizeSnapshot(snapshot));
-    for (const existing of active.docs) transaction.delete(existing.ref);
-    for (const record of recurring) {
-      transaction.set(doc(expensesPath(db, code), String(record.id)), normalizeExpense(record));
+    for (const item of active.docs) transaction.delete(item.ref);
+    for (const item of recurring) {
+      transaction.set(doc(expensesPath(db, code), String(item.id)), normalizeExpense(item));
     }
     transaction.update(parentRef, {
-      actualIncome: null,
-      activeMonth: nextMonth,
-      updatedAt: serverTimestamp(),
+      activeMonth: nextMonth, actualIncome: null,
+      expenseRevision: increment(1), updatedAt: serverTimestamp(),
     });
   });
+  if (!snapshot) throw new Error("Month archival did not finish.");
+  return { snapshot, recurring };
 }
 
 /** Permanently removes the household and all client-owned subcollection data. */
