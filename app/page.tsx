@@ -32,6 +32,7 @@ export default function HomePage() {
   const [activeMonth,   setActiveMonth]   = useState<string | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(getYM());
   const [monthBusy,     setMonthBusy]     = useState(false);
+  const [rolloverError, setRolloverError] = useState("");
   const [tab,           setTab]           = useState<"dash" | "history" | "settings">("dash");
   const [syncError,     setSyncError]     = useState("");
   const [syncRetry,     setSyncRetry]     = useState(0);
@@ -88,6 +89,7 @@ export default function HomePage() {
         setHistory(current => JSON.stringify(current) === JSON.stringify(remote.history) ? current : remote.history);
         setActualIncome(remote.actualIncome);
         setActiveMonth(remote.activeMonth);
+        if (remote.activeMonth && remote.activeMonth >= getYM()) setRolloverError("");
         saveHousehold(householdCode, KEY_CONFIG,        remote.config);
         saveHousehold(householdCode, KEY_EXPENSES,      remote.expenses);
         saveHousehold(householdCode, KEY_HISTORY,       remote.history);
@@ -147,6 +149,7 @@ export default function HomePage() {
     setActualIncome(null);
     setActiveMonth(null);
     setRemoteReady(false);
+    setRolloverError("");
     setTab("dash");
   }
 
@@ -270,6 +273,7 @@ export default function HomePage() {
       setExpenses(result.recurring);
       setActualIncome(null);
       setActiveMonth(nextMonth);
+      setRolloverError("");
       setSyncError("");
     } finally {
       setMonthBusy(false);
@@ -298,7 +302,7 @@ export default function HomePage() {
     void handleArchiveMonth().catch(error => {
       const message = error instanceof Error ? error.message : "Automatic month archive failed.";
       if (!/already been archived|already changed by another device/i.test(message)) {
-        setSyncError(message);
+        setRolloverError(message);
       }
     });
   }, [remoteReady, mode, householdCode, activeMonth, calendarMonth, monthBusy]);
@@ -354,12 +358,12 @@ export default function HomePage() {
       <div className="app-shell">
         <div className="phone-frame" style={{ paddingTop: 100, textAlign: "center" }}>
           <h2>Starting {calendarMonth}</h2>
-          {syncError ? (
+          {rolloverError ? (
             <>
-              <p className="form-error" role="alert">{syncError}</p>
+              <p className="form-error" role="alert">{rolloverError}</p>
               <button className="primary-action full" disabled={monthBusy}
                 onClick={() => void handleArchiveMonth().catch(error =>
-                  setSyncError(error instanceof Error ? error.message : "Archive failed."))}>
+                  setRolloverError(error instanceof Error ? error.message : "Archive failed."))}>
                 {monthBusy ? "Archiving..." : "Retry month archive"}
               </button>
             </>
