@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { Expense, HouseholdConfig } from "../lib/types";
+import { useEffect, useMemo, useState } from "react";
+import type { Expense, HouseholdConfig, MonthSnapshot } from "../lib/types";
+import { categoryChange, forecastMonth, spendByCategory, spendByDescription } from "../lib/insights";
 import { money, getYM, labelYM, todayISO } from "../lib/utils";
 import { Stat, ExpenseRow } from "./Shared";
 import { ExpenseFormSheet } from "./ExpenseFormSheet";
@@ -13,6 +14,11 @@ export function DashView({
   expenses,
   setExpenses,
   actualIncome,
+  history,
+  activeMonth,
+  monthBusy,
+  onStartTracking,
+  onArchiveMonth,
   householdCode,
   onSyncError,
   onHome,
@@ -21,6 +27,11 @@ export function DashView({
   expenses: Expense[];
   setExpenses: React.Dispatch<React.SetStateAction<Expense[]>>;
   actualIncome: number | null;
+  history: MonthSnapshot[];
+  activeMonth: string | null;
+  monthBusy: boolean;
+  onStartTracking: () => Promise<void>;
+  onArchiveMonth: () => Promise<void>;
   householdCode: string;
   onSyncError: (message: string) => void;
   onHome: () => void;
@@ -30,6 +41,13 @@ export function DashView({
   const [editing,   setEditing]   = useState<Expense | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [expenseError, setExpenseError] = useState("");
+  const [monthError, setMonthError] = useState("");
+  const [lastDeleted, setLastDeleted] = useState<Expense | null>(null);
+  useEffect(() => {
+    if (!lastDeleted) return;
+    const timer = setTimeout(() => setLastDeleted(null), 8000);
+    return () => clearTimeout(timer);
+  }, [lastDeleted]);
 
   // Use actual income if set for the month, otherwise fall back to config default
   const effectiveIncome = actualIncome ?? config.monthlyTakeHome;
@@ -48,10 +66,16 @@ export function DashView({
     config.budgets.reduce((sum, b) => sum + Math.max(b.amount - (categorySpent[b.category] || 0), 0), 0),
     [config.budgets, categorySpent]
   );
-  const safeToSpend = Math.max(
-    effectiveIncome - config.monthlySavingsGoal - totalSpent - remainingBudgetReserve,
-    0
+  const safeToSpend = effectiveIncome - config.monthlySavingsGoal - totalSpent - remainingBudgetReserve;
+  const forecast = useMemo(() => forecastMonth(expenses, effectiveIncome), [expenses, effectiveIncome]);
+  const currentMonthOpen = activeMonth === getYM();
+  const projectedSavings = currentMonthOpen ? forecast.projectedSavings : effectiveIncome - totalSpent;
+  const mostSpent = useMemo(() => spendByCategory(expenses).slice(0, 4), [expenses]);
+  const topMerchants = useMemo(() => spendByDescription(expenses).slice(0, 3), [expenses]);
+  const monthChanges = useMemo(
+    () => categoryChange(expenses, history, activeMonth ?? getYM()), [expenses, history, activeMonth]
   );
+  const biggestIncrease = monthChanges?.find(item => item.change > 0);
 
   const memberTotals = useMemo(() => {
     const m: Record<string, number> = {};
@@ -84,16 +108,9 @@ export function DashView({
       : { even: false as const, a, b, amount: halfDifference, from: a, to: b };
   }, [config.members, memberTotals]);
 
-  const actualSavings   = effectiveIncome - totalSpent;
-  const savingsVariance = actualSavings - config.monthlySavingsGoal;
-
-  const { dailyRate, projectedTotal } = useMemo(() => {
-    const now         = new Date();
-    const day         = now.getDate();
-    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const rate        = day > 0 ? totalSpent / day : 0;
-    return { dailyRate: rate, projectedTotal: Math.round(rate * daysInMonth) };
-  }, [totalSpent]);
+  const savingsVariance = projectedSavings - config.monthlySavingsGoal;
+  const dailyRate = forecast.variableDailyRate;
+  const projectedTotal = forecast.projectedSpent;
 
   // Budget alerts for categories at 80%+ utilization (dismissed per session)
   const budgetAlerts = useMemo(() => {
@@ -128,7 +145,9 @@ export function DashView({
   async function deleteExpense(id: number) {
     try {
       await deleteRemoteExpense(householdCode, id);
+      const removed = expenses.find(item => item.id === id);
       setExpenses(current => current.filter(item => item.id !== id));
+      if (removed) setLastDeleted(removed);
       onSyncError("");
     } catch (error) {
       console.error("Firebase expense delete failed", error);
@@ -136,6 +155,27 @@ export function DashView({
       onSyncError(message);
       setExpenseError(message);
     }
+  }
+  async function undoDelete() {
+    if (!lastDeleted) return;
+    const restoring = lastDeleted;
+    try {
+      await persistExpense(restoring);
+      setLastDeleted(null);
+    } catch {
+      // persistExpense already shows a recoverable error.
+    }
+  }
+  async function beginTracking() {
+    setMonthError("");
+    try { await onStartTracking(); }
+    catch (error) { setMonthError(error instanceof Error ? error.message : "Could not enable month tracking."); }
+  }
+  async function rollToThisMonth() {
+    if (!activeMonth || !window.confirm(`Archive all current entries as ${labelYM(activeMonth)} and start ${labelYM(getYM())}? Your history will be preserved.`)) return;
+    setMonthError("");
+    try { await onArchiveMonth(); }
+    catch (error) { setMonthError(error instanceof Error ? error.message : "Could not archive the month."); }
   }
   function duplicateExpense(e: Expense) {
     void persistExpense({ ...e, id: Date.now(), date: todayISO() }).catch(() => {});
@@ -149,7 +189,7 @@ export function DashView({
           <button className="home-link" onClick={onHome}>
             <div className="eyebrow">&#x2190; {config.name}</div>
           </button>
-          <h1>{labelYM(getYM())}</h1>
+          <h1>{labelYM(activeMonth ?? getYM())}</h1>
           <div className="subtle">
             Monthly budget
             {actualIncome !== null && <span className="income-override"> &middot; income adjusted</span>}
@@ -157,10 +197,24 @@ export function DashView({
         </div>
       </header>
 
+      {(activeMonth === null || activeMonth < getYM()) && (
+        <section className="month-rollover">
+          <strong>{activeMonth === null ? "Set up monthly tracking" : `${labelYM(activeMonth)} is still open`}</strong>
+          <p>{activeMonth === null
+            ? "This household predates month tracking. Review existing entries first, then start tracking this month without moving or deleting anything."
+            : `You're in ${labelYM(getYM())}. Close the open month to move its entries into History and bring recurring bills forward.`}</p>
+          <button className="secondary-action full" disabled={monthBusy}
+            onClick={() => void (activeMonth === null ? beginTracking() : rollToThisMonth())}>
+            {monthBusy ? "Working..." : activeMonth === null ? `Track ${labelYM(getYM())} (keep all entries)` : `Close ${labelYM(activeMonth)} and continue`}
+          </button>
+          {monthError && <p className="form-error" role="alert">{monthError}</p>}
+        </section>
+      )}
+
       <section className="hero-card">
         <div className="eyebrow">Safe to spend</div>
-        <div className="hero-amount">{money(safeToSpend)}</div>
-        <div className="subtle">after savings + {money(remainingBudgetReserve)} reserved for the rest of your budgets</div>
+        <div className="hero-amount" style={safeToSpend < 0 ? { color: "#f87171" } : undefined}>{money(safeToSpend)}</div>
+        <div className="subtle">{safeToSpend < 0 ? "Spending plus reserved budgets exceeds your take-home after your savings goal." : `After savings + ${money(remainingBudgetReserve)} reserved for remaining budgets`}</div>
       </section>
 
       {budgetAlerts.length > 0 && (
@@ -179,8 +233,8 @@ export function DashView({
         <Stat label="Savings goal"   value={money(config.monthlySavingsGoal)} />
         <Stat label="Take-home"      value={money(effectiveIncome)} />
         <Stat
-          label="Projected saved"
-          value={money(actualSavings)}
+          label={currentMonthOpen ? "Projected savings" : "Savings so far"}
+          value={money(projectedSavings)}
           accent={savingsVariance >= 0 ? "pos" : "neg"}
         />
       </section>
@@ -192,15 +246,19 @@ export function DashView({
             : <><span className="savings-neg">&#x2193; {money(Math.abs(savingsVariance))} behind</span> goal</>}
         </span>
         <span className="savings-rate">
-          {config.monthlyTakeHome > 0 ? Math.round((actualSavings / effectiveIncome) * 100) : 0}% saved
+          {effectiveIncome > 0 ? Math.round((projectedSavings / effectiveIncome) * 100) : 0}% {currentMonthOpen ? "projected" : "so far"}
         </span>
       </div>
+
+      {currentMonthOpen && (
+        <p className="forecast-disclaimer">Forecast uses non-recurring spending pace through today; recurring entries already recorded this month count once. Estimates may change.</p>
+      )}
 
       {config.budgets.length > 0 && (
         <section className="section">
           <div className="section-heading">
             <h2>Categories</h2>
-            <span className="velocity">{money(Math.round(dailyRate))}/day &rarr; {money(projectedTotal)} projected</span>
+            <span className="velocity">{currentMonthOpen ? `${money(Math.round(dailyRate))}/day variable · ${money(projectedTotal)} est.` : "Current entries"}</span>
           </div>
           <div className="budget-list">
             {config.budgets.map(({ category, amount }) => {
@@ -242,6 +300,39 @@ export function DashView({
                 <div className="progress">
                   <div className="progress-fill" style={{ width: "100%", background: "var(--muted-2)", opacity: 0.4 }} />
                 </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {expenses.length > 0 && (
+        <section className="section">
+          <div className="section-heading"><h2>Spending insights</h2><span>this month</span></div>
+          <div className="insights-list">
+            {mostSpent.length > 0 && (
+              <div className="insight-tile">
+                <span className="insight-label">Top categories</span>
+                {mostSpent.map(item => (
+                  <div key={item.name} className="insight-rank-row">
+                    <span>{item.name}</span><strong>{money(item.amount)}</strong>
+                    <div className="insight-bar"><div style={{ width: `${(item.amount / mostSpent[0].amount) * 100}%` }} /></div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {topMerchants.length > 0 && (
+              <div className="insight-tile">
+                <span className="insight-label">Most spent at</span>
+                {topMerchants.map(item => (
+                  <div key={item.name} className="insight-summary"><span>{item.name} ({item.count})</span><strong>{money(item.amount)}</strong></div>
+                ))}
+              </div>
+            )}
+            {biggestIncrease && (
+              <div className="insight-tile">
+                <span className="insight-label">Vs previous month</span>
+                <p><strong>{biggestIncrease.category}</strong> is {money(biggestIncrease.change)} higher than last month so far.</p>
               </div>
             )}
           </div>
@@ -290,13 +381,17 @@ export function DashView({
       </section>
 
       <div className="bottom-spacer" />
+      {lastDeleted && <div className="undo-toast" role="status">
+        <span>Deleted {lastDeleted.description}</span>
+        <button onClick={() => void undoDelete()}>Undo</button>
+      </div>}
 
       <div className="floating-actions">
         <button className="primary-action" onClick={() => setShowAdd(true)}>+ Add expense</button>
       </div>
 
       {showAdd && (
-        <ExpenseFormSheet config={config}
+        <ExpenseFormSheet config={config} recentExpenses={[...expenses, ...history.slice(0, 2).flatMap(item => item.expenses)]}
           onSave={persistExpense} onClose={() => setShowAdd(false)} />
       )}
       {showAll && (
