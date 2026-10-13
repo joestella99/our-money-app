@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { Expense, HouseholdConfig, MonthSnapshot } from "../lib/types";
-import { categoryChange, forecastMonth, spendByCategory, spendByDescription } from "../lib/insights";
+import { calculateBudgetOutlook, spendByDescription } from "../lib/insights";
 import { money, getYM, labelYM, todayISO } from "../lib/utils";
 import { Stat, ExpenseRow } from "./Shared";
 import { ExpenseFormSheet } from "./ExpenseFormSheet";
@@ -32,6 +32,7 @@ export function DashView({
 }) {
   const [showAdd,   setShowAdd]   = useState(false);
   const [showAll,   setShowAll]   = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [editing,   setEditing]   = useState<Expense | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [expenseError, setExpenseError] = useState("");
@@ -52,58 +53,25 @@ export function DashView({
     return m;
   }, [expenses]);
 
-  // Reserve the unspent portion of every category budget before calling money
-  // "safe to spend". This makes the hero number a true extra cushion rather
-  // than money that still needs to cover rent, groceries, utilities, etc.
-  const remainingBudgetReserve = useMemo(() =>
-    config.budgets.reduce((sum, b) => sum + Math.max(b.amount - (categorySpent[b.category] || 0), 0), 0),
-    [config.budgets, categorySpent]
+  // Budgets, not elapsed days, determine the savings outlook. Paying rent
+  // on day one cannot inflate next month's hypothetical rent spending.
+  const outlook = useMemo(
+    () => calculateBudgetOutlook(expenses, config.budgets, effectiveIncome, config.monthlySavingsGoal),
+    [expenses, config.budgets, effectiveIncome, config.monthlySavingsGoal]
   );
-  const safeToSpend = effectiveIncome - config.monthlySavingsGoal - totalSpent - remainingBudgetReserve;
-  const forecast = useMemo(() => forecastMonth(expenses, effectiveIncome), [expenses, effectiveIncome]);
-  const currentMonthOpen = activeMonth === getYM();
-  const projectedSavings = currentMonthOpen ? forecast.projectedSavings : effectiveIncome - totalSpent;
-  const mostSpent = useMemo(() => spendByCategory(expenses).slice(0, 4), [expenses]);
-  const topMerchants = useMemo(() => spendByDescription(expenses).slice(0, 3), [expenses]);
-  const monthChanges = useMemo(
-    () => categoryChange(expenses, history, activeMonth ?? getYM()), [expenses, history, activeMonth]
+  const { safeToSpend, onBudgetSavings, remainingBudget } = outlook;
+  const savingsVariance = outlook.versusGoal;
+  const totalBudget = config.budgets.reduce((sum, item) => sum + item.amount, 0);
+  const actualSpentPercent = totalBudget > 0
+    ? Math.max(0, Math.round((totalSpent / totalBudget) * 100))
+    : 0;
+  const spentPercent = Math.min(100, actualSpentPercent);
+  const topFrequent = useMemo(
+    () => spendByDescription(expenses)
+      .sort((a, b) => b.count - a.count || b.amount - a.amount)
+      .slice(0, 3),
+    [expenses]
   );
-  const biggestIncrease = monthChanges?.find(item => item.change > 0);
-
-  const memberTotals = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const n of config.members) m[n] = 0;
-    // Include Joint even if not in config.members
-    if (!config.members.includes("Joint")) m["Joint"] = 0;
-    for (const e of expenses) m[e.paidBy] = (m[e.paidBy] || 0) + e.amount;
-    return m;
-  }, [expenses, config.members]);
-
-  // Show Joint in Who Paid if any joint expenses exist or always as an option
-  const payerDisplay = useMemo(() => {
-    const hasJointExpenses = expenses.some(e => e.paidBy === "Joint");
-    if (config.members.includes("Joint") || hasJointExpenses) return config.members.includes("Joint")
-      ? config.members
-      : [...config.members, "Joint"];
-    return config.members;
-  }, [config.members, expenses]);
-
-  const settlement = useMemo(() => {
-    const people = config.members.filter(m => m.toLowerCase() !== "joint");
-    if (people.length !== 2) return null;
-    const [a, b] = people;
-    const aPaid = memberTotals[a] || 0;
-    const bPaid = memberTotals[b] || 0;
-    const halfDifference = Math.abs(aPaid - bPaid) / 2;
-    if (halfDifference < 0.5) return { even: true as const, a, b, amount: 0, from: "", to: "" };
-    return aPaid > bPaid
-      ? { even: false as const, a, b, amount: halfDifference, from: b, to: a }
-      : { even: false as const, a, b, amount: halfDifference, from: a, to: b };
-  }, [config.members, memberTotals]);
-
-  const savingsVariance = projectedSavings - config.monthlySavingsGoal;
-  const dailyRate = forecast.variableDailyRate;
-  const projectedTotal = forecast.projectedSpent;
 
   // Budget alerts for categories at 80%+ utilization (dismissed per session)
   const budgetAlerts = useMemo(() => {
@@ -164,180 +132,166 @@ export function DashView({
   }
   function dismiss(cat: string)         { setDismissed(prev => new Set([...prev, cat])); }
 
+  function openTransactions(category: string | null = null) {
+    setSelectedCategory(category);
+    setShowAll(true);
+  }
+
   return (
-    <>
-      <header className="topbar">
-        <div>
-          <button className="home-link" onClick={onHome}>
-            <div className="eyebrow">&#x2190; {config.name}</div>
-          </button>
+    <main className="dashboard-shell">
+      <header className="topbar topbar-budget">
+        <div className="topbar-copy">
+          <div className="brandline"><span className="brand-mark" /> OUR MONEY</div>
           <h1>{labelYM(activeMonth ?? getYM())}</h1>
           <div className="subtle">
-            Monthly budget
-            {actualIncome !== null && <span className="income-override"> &middot; income adjusted</span>}
+            Your household overview
+            {actualIncome !== null && <span className="income-override"> · income adjusted</span>}
           </div>
         </div>
+        <button className="home-switch" onClick={onHome} aria-label="Switch household" title="Switch household">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m3 10 9-7 9 7v10H3V10Z" />
+            <path d="M9 20v-7h6v7" />
+          </svg>
+        </button>
       </header>
 
-      <section className="hero-card">
-        <div className="eyebrow">Safe to spend</div>
-        <div className="hero-amount" style={safeToSpend < 0 ? { color: "#f87171" } : undefined}>{money(safeToSpend)}</div>
-        <div className="subtle">{safeToSpend < 0 ? "Spending plus reserved budgets exceeds your take-home after your savings goal." : `After savings + ${money(remainingBudgetReserve)} reserved for remaining budgets`}</div>
+      <section className="hero-card" aria-label="Money available beyond your budget plan">
+        <div className="hero-topline">
+          <span className="hero-label"><span className="hero-label-dot" /> AVAILABLE TO SPEND</span>
+          <span className="hero-caption">This month</span>
+        </div>
+        <div className={`hero-amount${safeToSpend < 0 ? " hero-amount-negative" : ""}`}>{money(safeToSpend)}</div>
+        <p className="hero-description">
+          {safeToSpend < 0
+            ? "Your spending plan exceeds your take-home and savings goal."
+            : "Extra after your savings goal and remaining category budgets."}
+        </p>
+        <div className="hero-divider" />
+        <div className="hero-bottom">
+          <div className="hero-bottom-copy">
+            <span>Spent this month</span>
+            <strong>{money(totalSpent)} <small>of {money(totalBudget)} budgeted</small></strong>
+          </div>
+          <div
+            className="budget-donut"
+            style={{ background: `conic-gradient(${actualSpentPercent > 100 ? "var(--negative)" : "var(--accent)"} 0 ${spentPercent}%, rgba(255,255,255,.12) ${spentPercent}% 100%)` }}
+            role="img" aria-label={`${actualSpentPercent}% of monthly budget spent`}
+          >
+            <div>{actualSpentPercent}%</div>
+          </div>
+        </div>
       </section>
 
       {budgetAlerts.length > 0 && (
-        <div className="alert-strip">
+        <div className="alert-strip" aria-label="Budget alerts">
           {budgetAlerts.map(({ category, pct, over }) => (
             <div key={category} className={`alert-chip ${over ? "over" : "warn"}`}>
-              <span>{over ? "⚠" : "↑"} {category} {pct}%</span>
-              <button onClick={() => dismiss(category)}>&#xD7;</button>
+              <span>{over ? "!" : "↗"} {category} {pct}%</span>
+              <button aria-label={`Dismiss ${category} alert`} onClick={() => dismiss(category)}>×</button>
             </div>
           ))}
         </div>
       )}
 
-      <section className="stat-grid">
-        <Stat label="Spent"          value={money(totalSpent)} />
-        <Stat label="Savings goal"   value={money(config.monthlySavingsGoal)} />
-        <Stat label="Take-home"      value={money(effectiveIncome)} />
-        <Stat
-          label={currentMonthOpen ? "Projected savings" : "Savings so far"}
-          value={money(projectedSavings)}
-          accent={savingsVariance >= 0 ? "pos" : "neg"}
-        />
+      <section className="snapshot-section" aria-label="Monthly budget snapshot">
+        <div className="section-heading"><h2>At a glance</h2><span>Based on your budget</span></div>
+        <div className="stat-grid">
+          <Stat label="Spent so far" value={money(totalSpent)} />
+          <Stat label="Still budgeted" value={money(remainingBudget)} />
+          <Stat label="Savings on budget" value={money(onBudgetSavings)} accent={onBudgetSavings >= config.monthlySavingsGoal ? "pos" : "neg"} />
+          <Stat label="Savings goal" value={money(config.monthlySavingsGoal)} />
+        </div>
+        <div className={`savings-status ${savingsVariance < 0 ? "savings-status--behind" : ""}`}>
+          <span className="savings-status-icon" aria-hidden="true">{savingsVariance >= 0 ? "✓" : "!"}</span>
+          <div>
+            <strong>{savingsVariance >= 0 ? "Your budget supports your savings goal" : "Your budget needs an adjustment"}</strong>
+            <span>{savingsVariance >= 0
+              ? `${money(savingsVariance)} left beyond the savings goal`
+              : `${money(Math.abs(savingsVariance))} short of your savings goal`}</span>
+          </div>
+        </div>
       </section>
 
-      <div className="savings-status">
-        <span>
-          {savingsVariance >= 0
-            ? <><span className="savings-pos">&#x2191; {money(savingsVariance)} ahead</span> of goal</>
-            : <><span className="savings-neg">&#x2193; {money(Math.abs(savingsVariance))} behind</span> goal</>}
-        </span>
-        <span className="savings-rate">
-          {effectiveIncome > 0 ? Math.round((projectedSavings / effectiveIncome) * 100) : 0}% {currentMonthOpen ? "projected" : "so far"}
-        </span>
-      </div>
-
       {config.budgets.length > 0 && (
-        <section className="section">
+        <section className="section budget-section">
           <div className="section-heading">
-            <h2>Categories</h2>
-            <span className="velocity">{currentMonthOpen ? `${money(Math.round(dailyRate))}/day variable · ${money(projectedTotal)} est.` : "Current entries"}</span>
+            <div><h2>Categories</h2><p>Tap one to see its transactions</p></div>
+            <span>{config.budgets.length} budgets</span>
           </div>
           <div className="budget-list">
-            {config.budgets.map(({ category, amount }) => {
-              const spent     = categorySpent[category] || 0;
+            {config.budgets.map(({ category, amount }, i) => {
+              const spent = categorySpent[category] || 0;
               const remaining = amount - spent;
-              const pct       = Math.min(amount > 0 ? (spent / amount) * 100 : 0, 100);
-              const over      = spent > amount;
+              const pct = Math.min(amount > 0 ? (spent / amount) * 100 : 0, 100);
+              const over = spent > amount;
               return (
-                <div className="budget-row" key={category}>
-                  <div className="budget-meta">
-                    <div>
+                <button className="budget-row budget-row-action" key={category}
+                  onClick={() => openTransactions(category)}
+                  aria-label={`View ${category} expenses, ${money(spent)} spent of ${money(amount)} budget`}>
+                  <div className="category-emblem" aria-hidden="true">{category.charAt(0).toUpperCase()}</div>
+                  <div className="budget-row-content">
+                    <div className="budget-row-heading">
                       <strong>{category}</strong>
-                      <span>
-                        {money(spent)} of {money(amount)} &middot;{" "}
-                        {over
-                          ? <span className="over-badge">{money(Math.abs(remaining))} over</span>
-                          : <span className="remaining-pos">{money(remaining)} left</span>}
-                      </span>
+                      <strong>{money(spent)} <span>/ {money(amount)}</span></strong>
                     </div>
-                    <span style={over ? { color: "#f87171" } : {}}>{Math.round(pct)}%</span>
+                    <div className="progress"><div className={`progress-fill ${over ? "progress-fill-over" : ""}`}
+                      style={{ width: `${pct}%` }} /></div>
+                    <div className="budget-row-foot">
+                      <span className={over ? "savings-neg" : ""}>{over ? `${money(-remaining)} over budget` : `${money(remaining)} remaining`}</span>
+                      <span>{Math.round(amount > 0 ? (spent / amount) * 100 : 0)}% used</span>
+                    </div>
                   </div>
-                  <div className="progress">
-                    <div className="progress-fill"
-                      style={{ width: `${pct}%`, background: over ? "#f87171" : undefined }} />
-                  </div>
-                </div>
+                  <span className="budget-chevron" aria-hidden="true">›</span>
+                </button>
               );
             })}
-            {/* Show uncategorized spending so it's never invisible */}
-            {(categorySpent["Uncategorized"] ?? 0) > 0 && (
-              <div className="budget-row">
-                <div className="budget-meta">
-                  <div>
-                    <strong style={{ color: "var(--muted)" }}>Uncategorized</strong>
-                    <span>{money(categorySpent["Uncategorized"])} &middot; no budget set</span>
+            {Object.entries(categorySpent)
+              .filter(([category, spent]) => spent > 0 && !config.budgets.some(b => b.category === category))
+              .map(([category, spent]) => (
+                <button className="budget-row budget-row-action" key={category}
+                  onClick={() => openTransactions(category)}>
+                  <div className="category-emblem" aria-hidden="true">?</div>
+                  <div className="budget-row-content">
+                    <div className="budget-row-heading"><strong>{category}</strong><strong>{money(spent)}</strong></div>
+                    <div className="budget-row-foot"><span>No budget set</span><span>View expenses</span></div>
                   </div>
-                  <span style={{ color: "var(--muted-2)" }}>—</span>
-                </div>
-                <div className="progress">
-                  <div className="progress-fill" style={{ width: "100%", background: "var(--muted-2)", opacity: 0.4 }} />
-                </div>
-              </div>
-            )}
+                  <span className="budget-chevron" aria-hidden="true">›</span>
+                </button>
+              ))}
           </div>
         </section>
       )}
 
-      {expenses.length > 0 && (
-        <section className="section">
-          <div className="section-heading"><h2>Spending insights</h2><span>this month</span></div>
-          <div className="insights-list">
-            {mostSpent.length > 0 && (
-              <div className="insight-tile">
-                <span className="insight-label">Top categories</span>
-                {mostSpent.map(item => (
-                  <div key={item.name} className="insight-rank-row">
-                    <span>{item.name}</span><strong>{money(item.amount)}</strong>
-                    <div className="insight-bar"><div style={{ width: `${(item.amount / mostSpent[0].amount) * 100}%` }} /></div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {topMerchants.length > 0 && (
-              <div className="insight-tile">
-                <span className="insight-label">Most spent at</span>
-                {topMerchants.map(item => (
-                  <div key={item.name} className="insight-summary"><span>{item.name} ({item.count})</span><strong>{money(item.amount)}</strong></div>
-                ))}
-              </div>
-            )}
-            {biggestIncrease && (
-              <div className="insight-tile">
-                <span className="insight-label">Vs previous month</span>
-                <p><strong>{biggestIncrease.category}</strong> is {money(biggestIncrease.change)} higher than last month so far.</p>
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {config.members.length > 0 && (
+      {topFrequent.length > 0 && (
         <section className="section">
           <div className="section-heading">
-            <h2>Who paid</h2>
-            <span>this month</span>
+            <div><h2>Your patterns</h2><p>Places you log most often</p></div>
           </div>
-          <div className="payer-grid">
-            {payerDisplay.map(m => <Stat key={m} label={m} value={money(memberTotals[m] || 0)} />)}
-          </div>
-          {settlement && (
-            <div className="settlement-card">
-              <div>
-                <div className="eyebrow">50/50 shared balance</div>
-                <strong>{settlement.even ? "You're even" : `${settlement.from} is ${money(settlement.amount)} behind`}</strong>
+          <div className="pattern-list">
+            {topFrequent.map((item, index) => (
+              <div className="pattern-item" key={item.name.toLocaleLowerCase()}>
+                <span className="pattern-index">{String(index + 1).padStart(2, "0")}</span>
+                <div><strong>{item.name}</strong><span>{item.count} {item.count === 1 ? "expense" : "expenses"}</span></div>
+                <strong>{money(item.amount)}</strong>
               </div>
-              <span>
-                {settlement.even
-                  ? "No settle-up needed"
-                  : `${settlement.from} → ${settlement.to}`}
-              </span>
-            </div>
-          )}
+            ))}
+          </div>
         </section>
       )}
 
-      <section className="section">
+      <section className="section recent-section">
         <div className="section-heading">
-          <h2>Recent</h2>
-          <button className="text-button" onClick={() => setShowAll(true)}>See all</button>
+          <div><h2>Recent activity</h2><p>Everything in one place</p></div>
+          <button className="text-button" onClick={() => openTransactions()}>
+            See all <span aria-hidden="true">↗</span>
+          </button>
         </div>
         <div className="transaction-list">
-          {expenseError && <p className="form-error" role="alert">Firebase error: {expenseError}</p>}
+          {expenseError && <p className="form-error" role="alert">Could not save: {expenseError}</p>}
           {expenses.length === 0
-            ? <p className="empty-state">No expenses yet &mdash; tap Add expense to get started.</p>
-            : expenses.slice(0, 5).map(e => (
+            ? <p className="empty-state">No expenses yet. Add your first expense to start tracking.</p>
+            : [...expenses].sort((a,b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 5).map(e => (
                 <ExpenseRow key={e.id} expense={e}
                   onEdit={setEditing} onDuplicate={duplicateExpense} onDelete={deleteExpense} />
               ))}
@@ -351,22 +305,24 @@ export function DashView({
       </div>}
 
       <div className="floating-actions">
-        <button className="primary-action" onClick={() => setShowAdd(true)}>+ Add expense</button>
+        <button className="primary-action add-expense-button" onClick={() => setShowAdd(true)}>
+          <span className="add-icon" aria-hidden="true">+</span> Add expense
+        </button>
       </div>
 
       {showAdd && (
-        <ExpenseFormSheet config={config} recentExpenses={[...expenses, ...history.slice(0, 2).flatMap(item => item.expenses)]}
+        <ExpenseFormSheet config={config} householdCode={householdCode} recentExpenses={[...expenses, ...history.slice(0, 2).flatMap(item => item.expenses)]}
           onSave={persistExpense} onClose={() => setShowAdd(false)} />
       )}
       {showAll && (
-        <AllSheet expenses={expenses}
+        <AllSheet expenses={expenses} initialCategory={selectedCategory}
           onEdit={setEditing} onDuplicate={duplicateExpense} onDelete={deleteExpense}
-          onClose={() => setShowAll(false)} />
+          onClose={() => { setShowAll(false); setSelectedCategory(null); }} />
       )}
       {editing && (
-        <ExpenseFormSheet config={config} initial={editing}
+        <ExpenseFormSheet config={config} householdCode={householdCode} initial={editing}
           onSave={persistExpense} onClose={() => setEditing(null)} />
       )}
-    </>
+    </main>
   );
 }

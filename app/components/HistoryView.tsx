@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { MonthSnapshot } from "../lib/types";
-import { money, labelYM, fmtDate, getYM } from "../lib/utils";
+import { money, moneyExact, labelYM, fmtDate, getYM } from "../lib/utils";
 import { Stat } from "./Shared";
 import { spendByCategory, spendByDescription } from "../lib/insights";
 
@@ -37,8 +37,9 @@ export function HistoryView({ history }: { history: MonthSnapshot[] }) {
     <>
       <header className="topbar">
         <div>
-          <div className="eyebrow">Archive</div>
+          <div className="brandline"><span className="brand-mark" /> OUR MONEY / HISTORY</div>
           <h1>Past months</h1>
+          <p className="subtle">A clear view of how your money moves</p>
         </div>
       </header>
 
@@ -148,7 +149,7 @@ export function HistoryView({ history }: { history: MonthSnapshot[] }) {
       {history.length === 0 ? (
         <div className="empty-page">
           <div className="setup-emoji">&#x1F4C5;</div>
-          <p>Past months appear here automatically when the month rolls over, or when you archive from Settings.</p>
+          <p>Past months appear here automatically when a new month begins.</p>
         </div>
       ) : (
         <div className="history-grid">
@@ -225,10 +226,6 @@ function MonthDetail({
     }
   }
 
-  const memberTotals: Record<string, number> = {};
-  for (const m of config.members) memberTotals[m] = 0;
-  for (const e of expenses) memberTotals[e.paidBy] = (memberTotals[e.paidBy] || 0) + e.amount;
-
   return (
     <div className="overlay" onClick={onClose}>
       <div className="sheet tall" onClick={e => e.stopPropagation()}>
@@ -277,12 +274,6 @@ function MonthDetail({
           </div>
         )}
 
-        {config.members.length > 0 && (
-          <div className="payer-grid" style={{ marginBottom: 20 }}>
-            {config.members.map(m => <Stat key={m} label={m} value={money(memberTotals[m] || 0)} />)}
-          </div>
-        )}
-
         <div className="section-heading" style={{ marginBottom: 12 }}>
           <h2>Transactions</h2>
           <span>{expenses.length} items</span>
@@ -298,7 +289,7 @@ function MonthDetail({
                 <span>{e.category} &middot; {e.paidBy} &middot; {fmtDate(e.date)}</span>
                 {e.note && <span className="expense-note">{e.note}</span>}
               </div>
-              <div><strong>{money(e.amount)}</strong></div>
+              <div><strong>{moneyExact(e.amount)}</strong></div>
             </div>
           ))}
         </div>

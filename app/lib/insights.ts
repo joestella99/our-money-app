@@ -1,40 +1,42 @@
-import type { Expense, MonthSnapshot } from "./types";
+import type { BudgetLine, Expense, MonthSnapshot } from "./types";
 import { getYM } from "./utils";
 
-export type Forecast = {
-  projectedSpent: number;
-  projectedSavings: number;
-  spentSoFar: number;
-  variableDailyRate: number;
-  remainingDays: number;
-  dayOfMonth: number;
-  daysInMonth: number;
-};
-
 /**
- * Recurring charges are already recorded when a month is opened, so project
- * only the additional NON-recurring spending. The estimate is a pace-based
- * guide, not a guaranteed balance.
+ * An intentionally NON time-based savings plan. Fixed bills such as rent are
+ * counted only once regardless of the day they are recorded.
+ *
+ * Savings if on budget = income - already logged spending - unspent category
+ * envelopes. Uncategorized/unbudgeted spending is included through logged
+ * spending and reduces savings immediately.
  */
-export function forecastMonth(expenses: Expense[], income: number, now = new Date()): Forecast {
-  const dayOfMonth = now.getDate();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const remainingDays = Math.max(0, daysInMonth - dayOfMonth);
-  const currentMonth = getYM(now);
-  const spentSoFar = expenses.reduce((total, item) => total + item.amount, 0);
-  const variableSpent = expenses
-    .filter(item => !item.recurring && item.date.startsWith(currentMonth))
-    .reduce((total, item) => total + item.amount, 0);
-  const variableDailyRate = variableSpent / Math.max(dayOfMonth, 1);
-  const projectedSpent = spentSoFar + variableDailyRate * remainingDays;
+export function calculateBudgetOutlook(
+  expenses: Expense[],
+  budgets: BudgetLine[],
+  income: number,
+  savingsGoal: number,
+) {
+  const spentByCategory = new Map<string, number>();
+  let spent = 0;
+  for (const expense of expenses) {
+    spent += expense.amount;
+    spentByCategory.set(
+      expense.category,
+      (spentByCategory.get(expense.category) ?? 0) + expense.amount,
+    );
+  }
+  const remainingBudget = budgets.reduce(
+    (sum, budget) => sum + Math.max(0, budget.amount - (spentByCategory.get(budget.category) ?? 0)),
+    0,
+  );
+  const onBudgetSpending = spent + remainingBudget;
+  const onBudgetSavings = income - onBudgetSpending;
   return {
-    projectedSpent,
-    projectedSavings: income - projectedSpent,
-    spentSoFar,
-    variableDailyRate,
-    remainingDays,
-    dayOfMonth,
-    daysInMonth,
+    spent,
+    remainingBudget,
+    onBudgetSpending,
+    onBudgetSavings,
+    safeToSpend: onBudgetSavings - savingsGoal,
+    versusGoal: onBudgetSavings - savingsGoal,
   };
 }
 

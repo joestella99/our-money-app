@@ -6,12 +6,14 @@ import { ExpenseRow } from "./Shared";
 
 export function AllSheet({
   expenses,
+  initialCategory = null,
   onEdit,
   onDuplicate,
   onDelete,
   onClose,
 }: {
   expenses: Expense[];
+  initialCategory?: string | null;
   onEdit: (e: Expense) => void;
   onDuplicate: (e: Expense) => void;
   onDelete: (id: number) => void;
@@ -19,9 +21,17 @@ export function AllSheet({
 }) {
   const [search, setSearch] = useState("");
   const [sort,   setSort]   = useState<SortKey>("date-desc");
+  const [category, setCategory] = useState<string | null>(initialCategory);
+  const categories = useMemo(() => [...new Set(expenses.map(expense => expense.category))].sort(), [expenses]);
+  // A budget category may have no recorded expenses yet. Keep its filter
+  // visible and always expose "All" so the empty list never traps the user.
+  const visibleCategories = category && !categories.includes(category)
+    ? [category, ...categories]
+    : categories;
 
   const filtered = useMemo(() => {
     let list = [...expenses];
+    if (category) list = list.filter(expense => expense.category === category);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -38,13 +48,13 @@ export function AllSheet({
       return a.amount - b.amount;
     });
     return list;
-  }, [expenses, search, sort]);
+  }, [expenses, search, sort, category]);
 
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="sheet tall" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet tall transactions-sheet" role="dialog" aria-modal="true" aria-labelledby="transactions-title" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-header">
-          <h2>All transactions</h2>
+          <h2 id="transactions-title">Your transactions</h2>
           <button className="pill-button" onClick={onClose}>Close</button>
         </div>
 
@@ -53,10 +63,11 @@ export function AllSheet({
             className="field"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search..."
+            placeholder="Search expenses..." aria-label="Search expenses"
           />
           <select
             className="field sort-select"
+            aria-label="Sort transactions"
             value={sort}
             onChange={(e) => setSort(e.target.value as SortKey)}
           >
@@ -67,6 +78,16 @@ export function AllSheet({
           </select>
         </div>
 
+        {(visibleCategories.length > 1 || category !== null) && (
+          <div className="category-filter-scroll" aria-label="Filter by category">
+            <button className={category === null ? "filter-chip selected" : "filter-chip"} onClick={() => setCategory(null)}>All</button>
+            {visibleCategories.map(item => (
+              <button key={item} className={category === item ? "filter-chip selected" : "filter-chip"}
+                onClick={() => setCategory(item)}>{item}</button>
+            ))}
+          </div>
+        )}
+
         <div className="tx-count">
           {filtered.length === expenses.length
             ? `${expenses.length} transactions`
@@ -75,7 +96,7 @@ export function AllSheet({
 
         <div className="transaction-list">
           {filtered.length === 0 ? (
-            <p className="empty-state">{search ? "No matches." : "No expenses yet."}</p>
+            <p className="empty-state">{search ? "No matching expenses." : category ? `No expenses in ${category} yet. Choose All to view every expense.` : "No expenses yet."}</p>
           ) : (
             filtered.map((e) => (
               <ExpenseRow
