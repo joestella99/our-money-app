@@ -8,6 +8,16 @@ export function money(n: number) {
   }).format(n);
 }
 
+/** Keep cents visible on individual transactions while dashboard totals stay compact. */
+export function moneyExact(n: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
 export function getYM(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
