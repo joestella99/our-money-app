@@ -353,6 +353,19 @@ export default function HomePage() {
     );
   }
 
+  // Don't expose editable stale-month expenses while automatic archival runs.
+  // If archival fails, return to the dashboard's manual retry control.
+  if (activeMonth && activeMonth < getYM() && !syncError) {
+    return (
+      <div className="app-shell">
+        <div className="phone-frame" style={{ paddingTop: 100, textAlign: "center" }}>
+          <h2>Starting {getYM().slice(0, 4)}'s current month</h2>
+          <p className="subtle">Safely moving the previous month into History. Your records are being preserved.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <div className="phone-frame">
