@@ -10,7 +10,7 @@ import {
 import type { HouseholdConfig, Expense, MonthSnapshot, HouseholdEntry } from "./lib/types";
 import { getYM } from "./lib/utils";
 import { isFirebaseConfigured } from "./lib/firebase";
-import { createHousehold, deleteHousehold, subscribeToHousehold, pushHousehold, type SetupResult } from "./lib/sync";
+import { createHousehold, deleteHousehold, subscribeToHousehold, pushHousehold, archiveMonth, type SetupResult } from "./lib/sync";
 import { HomeScreen }   from "./components/HomeScreen";
 import { SetupScreen }  from "./components/SetupScreen";
 import { DashView }     from "./components/DashView";
@@ -29,12 +29,17 @@ export default function HomePage() {
   const [expenses,      setExpenses]      = useState<Expense[]>([]);
   const [history,       setHistory]       = useState<MonthSnapshot[]>([]);
   const [actualIncome,  setActualIncome]  = useState<number | null>(null);
+  const [activeMonth,   setActiveMonth]   = useState<string | null>(null);
+  const [calendarMonth, setCalendarMonth] = useState(getYM());
+  const [monthBusy,     setMonthBusy]     = useState(false);
+  const [rolloverError, setRolloverError] = useState("");
   const [tab,           setTab]           = useState<"dash" | "history" | "settings">("dash");
   const [syncError,     setSyncError]     = useState("");
   const [syncRetry,     setSyncRetry]     = useState(0);
   const [remoteReady,   setRemoteReady]   = useState(false);
 
   const setupInProgress = useRef(false);
+  const attemptedAutomaticRollover = useRef<string | null>(null);
 
   // ── Hydrate ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -83,6 +88,8 @@ export default function HomePage() {
         setExpenses(current => JSON.stringify(current) === JSON.stringify(remote.expenses) ? current : remote.expenses);
         setHistory(current => JSON.stringify(current) === JSON.stringify(remote.history) ? current : remote.history);
         setActualIncome(remote.actualIncome);
+        setActiveMonth(remote.activeMonth);
+        if (remote.activeMonth && remote.activeMonth >= getYM()) setRolloverError("");
         saveHousehold(householdCode, KEY_CONFIG,        remote.config);
         saveHousehold(householdCode, KEY_EXPENSES,      remote.expenses);
         saveHousehold(householdCode, KEY_HISTORY,       remote.history);
@@ -140,7 +147,9 @@ export default function HomePage() {
     setExpenses([]);
     setHistory([]);
     setActualIncome(null);
+    setActiveMonth(null);
     setRemoteReady(false);
+    setRolloverError("");
     setTab("dash");
   }
 
@@ -153,6 +162,7 @@ export default function HomePage() {
     setExpenses(loadHousehold<Expense[]>(entry.code, KEY_EXPENSES, []));
     setHistory(loadHousehold<MonthSnapshot[]>(entry.code, KEY_HISTORY, []));
     setActualIncome(loadHousehold<number | null>(entry.code, KEY_ACTUAL_INCOME, null));
+    setActiveMonth(null);
 
     // Handle month rollover for the selected household
     const prev  = loadHousehold<string>(entry.code, KEY_MONTH, "");
@@ -183,11 +193,13 @@ export default function HomePage() {
         setExpenses([]);
         setHistory([]);
         setActualIncome(null);
+        setActiveMonth(getYM());
       } else {
         setConfig(result.data.config);
         setExpenses(result.data.expenses);
         setHistory(result.data.history);
         setActualIncome(result.data.actualIncome);
+        setActiveMonth(result.data.activeMonth);
         saveHousehold(code, KEY_CONFIG,        result.data.config);
         saveHousehold(code, KEY_EXPENSES,      result.data.expenses);
         saveHousehold(code, KEY_HISTORY,       result.data.history);
@@ -233,6 +245,7 @@ export default function HomePage() {
     setExpenses([]);
     setHistory([]);
     setActualIncome(null);
+    setActiveMonth(null);
     setHouseholdCode(null);
     setRemoteReady(false);
     setMode("home");
@@ -245,6 +258,54 @@ export default function HomePage() {
     await deleteHousehold(householdCode);
     clearLocalHousehold(householdCode);
   }
+
+  async function handleArchiveMonth() {
+    if (!householdCode || !remoteReady || !activeMonth || monthBusy) {
+      throw new Error("Wait for household sync before archiving.");
+    }
+    const nextMonth = calendarMonth;
+    if (activeMonth >= nextMonth) return;
+    const sourceMonth = activeMonth;
+    setMonthBusy(true);
+    try {
+      const result = await archiveMonth(householdCode, sourceMonth, nextMonth);
+      setHistory(current => [result.snapshot, ...current.filter(item => item.yearMonth !== sourceMonth)]);
+      setExpenses(result.recurring);
+      setActualIncome(null);
+      setActiveMonth(nextMonth);
+      setRolloverError("");
+      setSyncError("");
+    } finally {
+      setMonthBusy(false);
+    }
+  }
+
+  // Check at startup, on tab refocus, and while an open tab crosses midnight.
+  useEffect(() => {
+    function refreshMonth() { setCalendarMonth(getYM()); }
+    const interval = window.setInterval(refreshMonth, 30_000);
+    window.addEventListener("focus", refreshMonth);
+    document.addEventListener("visibilitychange", refreshMonth);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshMonth);
+      document.removeEventListener("visibilitychange", refreshMonth);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!remoteReady || mode !== "app" || !householdCode || !activeMonth
+      || activeMonth >= calendarMonth || monthBusy) return;
+    const attemptKey = `${householdCode}:${activeMonth}`;
+    if (attemptedAutomaticRollover.current === attemptKey) return;
+    attemptedAutomaticRollover.current = attemptKey;
+    void handleArchiveMonth().catch(error => {
+      const message = error instanceof Error ? error.message : "Automatic month archive failed.";
+      if (!/already been archived|already changed by another device/i.test(message)) {
+        setRolloverError(message);
+      }
+    });
+  }, [remoteReady, mode, householdCode, activeMonth, calendarMonth, monthBusy]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   if (!hydrated) return null;
@@ -290,6 +351,28 @@ export default function HomePage() {
     );
   }
 
+  // Don't expose editable stale-month expenses while automatic archival runs.
+  // If archival fails, return to the dashboard's manual retry control.
+  if (activeMonth && activeMonth < calendarMonth) {
+    return (
+      <div className="app-shell">
+        <div className="phone-frame" style={{ paddingTop: 100, textAlign: "center" }}>
+          <h2>Starting {calendarMonth}</h2>
+          {rolloverError ? (
+            <>
+              <p className="form-error" role="alert">{rolloverError}</p>
+              <button className="primary-action full" disabled={monthBusy}
+                onClick={() => void handleArchiveMonth().catch(error =>
+                  setRolloverError(error instanceof Error ? error.message : "Archive failed."))}>
+                {monthBusy ? "Archiving..." : "Retry month archive"}
+              </button>
+            </>
+          ) : <p className="subtle">Safely moving the previous month into History. Your records are being preserved.</p>}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <div className="phone-frame">
@@ -299,6 +382,8 @@ export default function HomePage() {
             expenses={expenses}
             setExpenses={setExpenses}
             actualIncome={actualIncome}
+            history={history}
+            activeMonth={activeMonth}
             householdCode={householdCode!}
             onSyncError={setSyncError}
             onHome={goHome}
@@ -317,6 +402,7 @@ export default function HomePage() {
             setHistory={setHistory}
             actualIncome={actualIncome}
             setActualIncome={setActualIncome}
+            activeMonth={activeMonth}
             householdCode={householdCode}
             onDelete={permanentlyDeleteHousehold}
             onHome={goHome}

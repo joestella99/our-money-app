@@ -97,6 +97,42 @@ monthly take-home
 
 So money still earmarked for rent, groceries, utilities, dining, travel, etc. is no longer presented as free cash.
 
+## Automatic monthly archive (October 2026 update)
+
+**All households, including existing ones, are enrolled automatically.** A
+household that predates this feature is assigned an active month when it first
+syncs; if all its unarchived expenses have earlier dates, the month is inferred
+from those entries. Otherwise, the current calendar month is used to avoid
+incorrectly moving a mixture of older and newer expenses.
+
+On the first app open (or app tab return) after a month change, the app
+automatically:
+
+1. Reads the latest Firestore expenses and stores the prior month in History.
+2. Carries recurring expenses into the new month.
+3. Resets the current month's actual-income override.
+4. Syncs the new month across household devices.
+
+No manual archiving or opt-in is required. The app also checks while an open
+tab crosses midnight. This process is **automatic when a client is running**;
+it is not a server-side midnight job that operates while all devices are
+closed. Missed months with no app activity are not invented.
+
+Archive and rollover writes happen in one Firestore transaction, with a shared
+revision counter that prevents a modern client from editing expenses midway
+through a roll. When an archive fails, the previous month's data is preserved
+and the app displays a retry option rather than silently discarding expenses.
+
+## Other quality-of-life improvements
+
+- Recent merchant/description suggestions in the expense form can preselect
+  a previously used category and payer.
+- Undo a deleted expense for eight seconds.
+- Savings forecasts distinguish recurring entries already recorded from the
+  remaining variable spending pace.
+- Monthly top categories, top descriptions, and last-three-month trend tables.
+- Local date handling and truthful negative safe-to-spend displays.
+
 ## Recurring expenses
 
 Mark an expense **Recurring monthly**. When the month is archived, it is copied into the next month with a new ID and the same calendar day (clamped to month-end where needed).

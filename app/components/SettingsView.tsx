@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import type { Expense, HouseholdConfig, MonthSnapshot } from "../lib/types";
-import { getYM, labelYM, exportCSV, money, nextMonthISO } from "../lib/utils";
-import { archiveMonth, restoreHousehold } from "../lib/sync";
+import { getYM, labelYM, exportCSV, money } from "../lib/utils";
+import { restoreHousehold } from "../lib/sync";
 
 type BackupData = {
   version: number;
@@ -17,6 +17,7 @@ type BackupData = {
 export function SettingsView({
   config, setConfig, expenses, setExpenses, history, setHistory,
   actualIncome, setActualIncome, householdCode, onDelete, onHome, syncError,
+  activeMonth,
 }: {
   config: HouseholdConfig;
   setConfig: (c: HouseholdConfig) => void;
@@ -30,6 +31,7 @@ export function SettingsView({
   onDelete: () => Promise<void>;
   onHome: () => void;
   syncError: string;
+  activeMonth: string | null;
 }) {
   const [draft,        setDraft]        = useState<HouseholdConfig>(() => ({
     ...config, budgets: [...config.budgets], members: [...config.members],
@@ -38,7 +40,6 @@ export function SettingsView({
   const [catName,      setCatName]      = useState("");
   const [catAmt,       setCatAmt]       = useState("");
   const [saved,        setSaved]        = useState(false);
-  const [confirmClose, setConfirmClose] = useState(false);
   const [showDelete,   setShowDelete]   = useState(false);
   const [deleteInput,  setDeleteInput]  = useState("");
   const [deleting,     setDeleting]     = useState(false);
@@ -152,37 +153,7 @@ export function SettingsView({
       setDeleting(false);
     }
   }
-  async function closeMonth() {
-    if (!householdCode) return;
-    const ym = getYM();
-    const snap: MonthSnapshot = {
-      yearMonth:    ym,
-      config,
-      expenses,
-      actualIncome,
-    };
-    const newHist = [snap, ...history.filter(h => h.yearMonth !== ym)];
 
-    // Roll recurring expenses into the next month instead of silently dropping them.
-    // Each gets a fresh id and its date moves to the same day next month.
-    const recurringNextMonth = expenses
-      .filter(e => e.recurring)
-      .map((e, index) => ({
-        ...e,
-        id: Date.now() + index,
-        date: nextMonthISO(e.date),
-      }));
-
-    try {
-      await archiveMonth(householdCode, snap, recurringNextMonth);
-      setHistory(newHist);
-      setExpenses(recurringNextMonth);
-      setActualIncome(null);
-      setConfirmClose(false);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Could not archive this month.");
-    }
-  }
 
   return (
     <>
@@ -295,12 +266,8 @@ export function SettingsView({
 
       <section className="settings-group">
         <div className="settings-label">Month controls</div>
-        <p className="subtle" style={{ marginBottom: 14 }}>
-          Close the current month and start fresh. Expenses will be saved to History.
-        </p>
-        <button className="secondary-action full" onClick={() => setConfirmClose(true)} style={{ marginTop: 0 }}>
-          Archive {labelYM(getYM())} &#x2192;
-        </button>
+        <p className="subtle">Archiving is fully automatic for every household. When the calendar moves into a new month, the app saves the old month to History and carries recurring expenses forward on the first app visit.</p>
+        <p className="subtle" style={{ marginTop: 12 }}>Active month: <strong>{labelYM(activeMonth ?? getYM())}</strong></p>
       </section>
 
       <section className="settings-group" style={{ borderBottom: 0 }}>
@@ -393,24 +360,7 @@ export function SettingsView({
           </div>
         </div>
       )}
-      {confirmClose && (
-        <div className="overlay" onClick={() => setConfirmClose(false)}>
-          <div className="sheet" onClick={e => e.stopPropagation()}>
-            <div className="sheet-header">
-              <h2>Archive month?</h2>
-              <button className="pill-button" onClick={() => setConfirmClose(false)}>Cancel</button>
-            </div>
-            <p className="subtle">
-              This will archive {labelYM(getYM())} with {expenses.length} expense{expenses.length !== 1 ? "s" : ""}. {expenses.filter(e => e.recurring).length > 0
-                ? `${expenses.filter(e => e.recurring).length} recurring expense${expenses.filter(e => e.recurring).length !== 1 ? "s" : ""} will roll into next month.`
-                : "The new month will start fresh."}
-            </p>
-            <button className="primary-action full" style={{ marginTop: 24 }} onClick={closeMonth}>
-              Yes, archive this month
-            </button>
-          </div>
-        </div>
-      )}
+
     </>
   );
 }
