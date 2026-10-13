@@ -99,23 +99,32 @@ So money still earmarked for rent, groceries, utilities, dining, travel, etc. is
 
 ## Automatic monthly archive (October 2026 update)
 
-New households track their active calendar month in Firestore from day one.
-Existing households show a **Track this month** action once; enable it to opt in
-without moving or changing any existing expenses. After enabling, on the first
-app open in a subsequent month (on either device) the app automatically:
+**All households are enrolled automatically, including pre-existing ones.** No
+setup button or manual month-closing action is required. Each household tracks
+the active month in Firestore; existing households are initialized on first sync.
+When there are previous expenses, the most recent valid non-future expense date
+can establish the current open month. Existing expense data is preserved.
 
-1. Archives the last open month as a snapshot in History.
-2. Moves recurring expense templates into the current calendar month.
-3. Resets the current month's actual-income override.
-4. Synchronizes the new active month to other phones.
+On the first app visit after a calendar month changes (or within about 30 seconds
+of midnight if the app remains open):
 
-This happens **on app open, not at midnight in the background**. When the app
-has not been opened for multiple months, it archives the last open month and
-continues in the present month; it does not invent intervening expense history.
-Firestore performs the archive and rollover atomically with a shared month
-guard to prevent duplicate archives. Extremely large months are blocked rather
-than partially archived. If the archive fails, the old month remains in place
-and the dashboard presents a manual retry option.
+1. Capture the latest expenses, income and configuration from Firestore in an
+   archived History snapshot.
+2. Replace the active records with next month's recurring entries.
+3. Reset the income override and share the new active month with other devices.
+4. Prevent duplicate archival by using a Firestore transaction and a shared
+   revision counter updated by ordinary expense writes.
+
+The app **does not run in the background when closed**. It catches up on the next
+visit, which requires an online Firestore connection. If several months pass
+without opening the app, it archives the last open month and continues in the
+present month without inventing intermediate monthly history. For legacy data
+already spanning multiple months, the new system cannot reliably reconstruct
+previously missed month-end snapshots.
+
+If a transaction cannot complete, it leaves the previous month intact and
+offers a retry. Extremely large months are blocked rather than partially
+archived.
 
 ## Other quality-of-life improvements
 
