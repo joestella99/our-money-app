@@ -6,12 +6,14 @@ import { ExpenseRow } from "./Shared";
 
 export function AllSheet({
   expenses,
+  initialCategory = null,
   onEdit,
   onDuplicate,
   onDelete,
   onClose,
 }: {
   expenses: Expense[];
+  initialCategory?: string | null;
   onEdit: (e: Expense) => void;
   onDuplicate: (e: Expense) => void;
   onDelete: (id: number) => void;
@@ -19,9 +21,12 @@ export function AllSheet({
 }) {
   const [search, setSearch] = useState("");
   const [sort,   setSort]   = useState<SortKey>("date-desc");
+  const [category, setCategory] = useState<string | null>(initialCategory);
+  const categories = useMemo(() => [...new Set(expenses.map(expense => expense.category))].sort(), [expenses]);
 
   const filtered = useMemo(() => {
     let list = [...expenses];
+    if (category) list = list.filter(expense => expense.category === category);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -38,13 +43,13 @@ export function AllSheet({
       return a.amount - b.amount;
     });
     return list;
-  }, [expenses, search, sort]);
+  }, [expenses, search, sort, category]);
 
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="sheet tall" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet tall transactions-sheet" role="dialog" aria-modal="true" aria-labelledby="transactions-title" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-header">
-          <h2>All transactions</h2>
+          <h2 id="transactions-title">Your transactions</h2>
           <button className="pill-button" onClick={onClose}>Close</button>
         </div>
 
@@ -53,10 +58,11 @@ export function AllSheet({
             className="field"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search..."
+            placeholder="Search expenses..." aria-label="Search expenses"
           />
           <select
             className="field sort-select"
+            aria-label="Sort transactions"
             value={sort}
             onChange={(e) => setSort(e.target.value as SortKey)}
           >
@@ -66,6 +72,16 @@ export function AllSheet({
             <option value="amount-asc">Lowest</option>
           </select>
         </div>
+
+        {categories.length > 1 && (
+          <div className="category-filter-scroll" aria-label="Filter by category">
+            <button className={category === null ? "filter-chip selected" : "filter-chip"} onClick={() => setCategory(null)}>All</button>
+            {categories.map(item => (
+              <button key={item} className={category === item ? "filter-chip selected" : "filter-chip"}
+                onClick={() => setCategory(item)}>{item}</button>
+            ))}
+          </div>
+        )}
 
         <div className="tx-count">
           {filtered.length === expenses.length
