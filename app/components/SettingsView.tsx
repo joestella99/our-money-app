@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import type { Expense, HouseholdConfig, MonthSnapshot } from "../lib/types";
-import { getYM, labelYM, exportCSV, money, nextMonthISO } from "../lib/utils";
-import { archiveMonth, restoreHousehold } from "../lib/sync";
+import { getYM, labelYM, exportCSV, money } from "../lib/utils";
+import { restoreHousehold } from "../lib/sync";
 
 type BackupData = {
   version: number;
@@ -17,6 +17,7 @@ type BackupData = {
 export function SettingsView({
   config, setConfig, expenses, setExpenses, history, setHistory,
   actualIncome, setActualIncome, householdCode, onDelete, onHome, syncError,
+  activeMonth, monthBusy, onArchiveMonth,
 }: {
   config: HouseholdConfig;
   setConfig: (c: HouseholdConfig) => void;
@@ -30,6 +31,9 @@ export function SettingsView({
   onDelete: () => Promise<void>;
   onHome: () => void;
   syncError: string;
+  activeMonth: string | null;
+  monthBusy: boolean;
+  onArchiveMonth: () => Promise<void>;
 }) {
   const [draft,        setDraft]        = useState<HouseholdConfig>(() => ({
     ...config, budgets: [...config.budgets], members: [...config.members],
@@ -153,31 +157,8 @@ export function SettingsView({
     }
   }
   async function closeMonth() {
-    if (!householdCode) return;
-    const ym = getYM();
-    const snap: MonthSnapshot = {
-      yearMonth:    ym,
-      config,
-      expenses,
-      actualIncome,
-    };
-    const newHist = [snap, ...history.filter(h => h.yearMonth !== ym)];
-
-    // Roll recurring expenses into the next month instead of silently dropping them.
-    // Each gets a fresh id and its date moves to the same day next month.
-    const recurringNextMonth = expenses
-      .filter(e => e.recurring)
-      .map((e, index) => ({
-        ...e,
-        id: Date.now() + index,
-        date: nextMonthISO(e.date),
-      }));
-
     try {
-      await archiveMonth(householdCode, snap, recurringNextMonth);
-      setHistory(newHist);
-      setExpenses(recurringNextMonth);
-      setActualIncome(null);
+      await onArchiveMonth();
       setConfirmClose(false);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Could not archive this month.");
@@ -296,10 +277,10 @@ export function SettingsView({
       <section className="settings-group">
         <div className="settings-label">Month controls</div>
         <p className="subtle" style={{ marginBottom: 14 }}>
-          Close the current month and start fresh. Expenses will be saved to History.
+          Close the open month and start fresh. Expenses will be saved to History. Review entries before archiving.
         </p>
         <button className="secondary-action full" onClick={() => setConfirmClose(true)} style={{ marginTop: 0 }}>
-          Archive {labelYM(getYM())} &#x2192;
+          Archive {labelYM(activeMonth ?? getYM())} &#x2192;
         </button>
       </section>
 
@@ -401,12 +382,12 @@ export function SettingsView({
               <button className="pill-button" onClick={() => setConfirmClose(false)}>Cancel</button>
             </div>
             <p className="subtle">
-              This will archive {labelYM(getYM())} with {expenses.length} expense{expenses.length !== 1 ? "s" : ""}. {expenses.filter(e => e.recurring).length > 0
+              This will archive {labelYM(activeMonth ?? getYM())} with {expenses.length} expense{expenses.length !== 1 ? "s" : ""}. {expenses.filter(e => e.recurring).length > 0
                 ? `${expenses.filter(e => e.recurring).length} recurring expense${expenses.filter(e => e.recurring).length !== 1 ? "s" : ""} will roll into next month.`
                 : "The new month will start fresh."}
             </p>
-            <button className="primary-action full" style={{ marginTop: 24 }} onClick={closeMonth}>
-              Yes, archive this month
+            <button className="primary-action full" disabled={monthBusy} style={{ marginTop: 24 }} onClick={() => void closeMonth()}>
+              {monthBusy ? "Archiving..." : "Yes, archive this month"}
             </button>
           </div>
         </div>
