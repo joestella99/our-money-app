@@ -360,6 +360,12 @@ export async function archiveMonth(code: string, snapshot: MonthSnapshot, recurr
   // No partial month rollover is possible: if we cannot commit, the old month
   // remains intact and a later app visit can retry safely.
   const active = await getDocs(expensesPath(db, code));
+  // Never archive a stale local snapshot if another device has changed the
+  // active set since the last Firestore subscription update.
+  const capturedIds = new Set(snapshot.expenses.map(item => String(item.id)));
+  if (capturedIds.size !== active.size || active.docs.some(item => !capturedIds.has(item.id))) {
+    throw new Error("Expenses changed on another device. Refresh and retry the archive.");
+  }
   const parentRef = doc(db, "households", code);
   const archiveRef = doc(archivedMonthsPath(db, code), snapshot.yearMonth);
   const writesNeeded = active.size + recurring.length + 2;
