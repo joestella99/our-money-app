@@ -97,6 +97,36 @@ monthly take-home
 
 So money still earmarked for rent, groceries, utilities, dining, travel, etc. is no longer presented as free cash.
 
+## Automatic monthly archive (October 2026 update)
+
+New households track their active calendar month in Firestore from day one.
+Existing households show a **Track this month** action once; enable it to opt in
+without moving or changing any existing expenses. After enabling, on the first
+app open in a subsequent month (on either device) the app automatically:
+
+1. Archives the last open month as a snapshot in History.
+2. Moves recurring expense templates into the current calendar month.
+3. Resets the current month's actual-income override.
+4. Synchronizes the new active month to other phones.
+
+This happens **on app open, not at midnight in the background**. When the app
+has not been opened for multiple months, it archives the last open month and
+continues in the present month; it does not invent intervening expense history.
+Firestore performs the archive and rollover atomically with a shared month
+guard to prevent duplicate archives. Extremely large months are blocked rather
+than partially archived. If the archive fails, the old month remains in place
+and the dashboard presents a manual retry option.
+
+## Other quality-of-life improvements
+
+- Recent merchant/description suggestions in the expense form can preselect
+  a previously used category and payer.
+- Undo a deleted expense for eight seconds.
+- Savings forecasts distinguish recurring entries already recorded from the
+  remaining variable spending pace.
+- Monthly top categories, top descriptions, and last-three-month trend tables.
+- Local date handling and truthful negative safe-to-spend displays.
+
 ## Recurring expenses
 
 Mark an expense **Recurring monthly**. When the month is archived, it is copied into the next month with a new ID and the same calendar day (clamped to month-end where needed).
