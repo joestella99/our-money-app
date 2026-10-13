@@ -218,10 +218,6 @@ export function DashView({
         </span>
       </div>
 
-      {currentMonthOpen && (
-        <p className="forecast-disclaimer">Forecast uses non-recurring spending pace through today; recurring entries already recorded this month count once. Estimates may change.</p>
-      )}
-
       {config.budgets.length > 0 && (
         <section className="section">
           <div className="section-heading">
