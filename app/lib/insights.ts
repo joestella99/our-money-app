@@ -1,4 +1,4 @@
-import type { Expense, MonthSnapshot } from "./types";
+import type { BudgetLine, Expense, MonthSnapshot } from "./types";
 import { getYM } from "./utils";
 
 export type Forecast = {
@@ -35,6 +35,45 @@ export function forecastMonth(expenses: Expense[], income: number, now = new Dat
     remainingDays,
     dayOfMonth,
     daysInMonth,
+  };
+}
+
+/**
+ * An intentionally NON time-based savings plan. Fixed bills such as rent are
+ * counted only once regardless of the day they are recorded.
+ *
+ * Savings if on budget = income - already logged spending - unspent category
+ * envelopes. Uncategorized/unbudgeted spending is included through logged
+ * spending and reduces savings immediately.
+ */
+export function calculateBudgetOutlook(
+  expenses: Expense[],
+  budgets: BudgetLine[],
+  income: number,
+  savingsGoal: number,
+) {
+  const spentByCategory = new Map<string, number>();
+  let spent = 0;
+  for (const expense of expenses) {
+    spent += expense.amount;
+    spentByCategory.set(
+      expense.category,
+      (spentByCategory.get(expense.category) ?? 0) + expense.amount,
+    );
+  }
+  const remainingBudget = budgets.reduce(
+    (sum, budget) => sum + Math.max(0, budget.amount - (spentByCategory.get(budget.category) ?? 0)),
+    0,
+  );
+  const onBudgetSpending = spent + remainingBudget;
+  const onBudgetSavings = income - onBudgetSpending;
+  return {
+    spent,
+    remainingBudget,
+    onBudgetSpending,
+    onBudgetSavings,
+    safeToSpend: onBudgetSavings - savingsGoal,
+    versusGoal: onBudgetSavings - savingsGoal,
   };
 }
 
