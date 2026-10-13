@@ -4,24 +4,45 @@ import { useMemo, useState } from "react";
 import type { Expense, HouseholdConfig } from "../lib/types";
 import { todayISO } from "../lib/utils";
 
+/** Payer selection is a local, per-household device preference.
+ * Never infer it from shared household expenses: two people may log
+ * purchases at the same merchant from different devices. */
+function preferredPayer(householdCode: string, members: string[]): string {
+  const fallback = members[0] ?? "";
+  if (typeof window === "undefined") return fallback;
+  try {
+    const preference = window.localStorage.getItem(`our-money:payer:${householdCode}`);
+    return preference && (members.includes(preference) || preference === "Joint")
+      ? preference
+      : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export function ExpenseFormSheet({
   config,
+  householdCode,
   initial,
   recentExpenses = [],
   onSave,
   onClose,
 }: {
   config: HouseholdConfig;
+  householdCode: string;
   initial?: Expense;
   recentExpenses?: Expense[];
   onSave: (e: Expense) => Promise<void | boolean>;
   onClose: () => void;
 }) {
-  const isEdit    = !!initial;
+  const isEdit = !!initial;
+  const [startingPayer] = useState(() =>
+    initial?.paidBy ?? preferredPayer(householdCode, config.members)
+  );
   const [amount,    setAmount]    = useState(initial ? String(initial.amount) : "");
   const [desc,      setDesc]      = useState(initial?.description ?? "");
   const [cat,       setCat]       = useState(initial?.category ?? config.budgets[0]?.category ?? "Uncategorized");
-  const [paidBy,    setPaidBy]    = useState(initial?.paidBy ?? config.members[0] ?? "");
+  const [paidBy,    setPaidBy]    = useState(startingPayer);
   const [date,      setDate]      = useState(initial?.date ?? todayISO());
   const [note,      setNote]      = useState(initial?.note ?? "");
   const [recurring, setRecurring] = useState(initial?.recurring ?? false);
@@ -46,7 +67,7 @@ export function ExpenseFormSheet({
   function fillFromRecent(item: Expense, updateDescription: boolean) {
     if (updateDescription) setDesc(item.description);
     if (!categoryTouched && config.budgets.some(budget => budget.category === item.category)) setCat(item.category);
-    if (!payerTouched && (config.members.includes(item.paidBy) || item.paidBy === "Joint")) setPaidBy(item.paidBy);
+    // Never copy the payer of a shared suggestion; users pay independently.
   }
 
   function changeDescription(value: string) {
@@ -62,7 +83,7 @@ export function ExpenseFormSheet({
     const dirty = amount !== (initial ? String(initial.amount) : "")
       || desc !== (initial?.description ?? "")
       || cat !== (initial?.category ?? config.budgets[0]?.category ?? "Uncategorized")
-      || paidBy !== (initial?.paidBy ?? config.members[0] ?? "")
+      || paidBy !== startingPayer
       || date !== (initial?.date ?? todayISO())
       || note !== (initial?.note ?? "")
       || recurring !== (initial?.recurring ?? false);
@@ -94,7 +115,14 @@ export function ExpenseFormSheet({
         note:        note.trim(),
         recurring,
       });
-      if (saved !== false) onClose();
+      if (saved !== false) {
+        if (!isEdit && payerTouched) {
+          try {
+            window.localStorage.setItem(`our-money:payer:${householdCode}`, paidBy);
+          } catch { /* Storage may be disabled; expense is still saved. */ }
+        }
+        onClose();
+      }
     } catch (error) {
       console.error("Firebase expense write failed", error);
       setSaveError(error instanceof Error ? error.message : "Could not save expense to Firebase.");
