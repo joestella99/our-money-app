@@ -17,12 +17,14 @@ import {
 } from "firebase/firestore";
 import { ensureAnonymousAuth, getDb } from "./firebase";
 import type { HouseholdConfig, Expense, MonthSnapshot } from "./types";
+import { getYM } from "./utils";
 
 export type HouseholdData = {
   config: HouseholdConfig;
   expenses: Expense[];
   history: MonthSnapshot[];
   actualIncome: number | null;
+  activeMonth: string | null;
   memberUids?: string[];
   updatedAt: number;
 };
@@ -65,6 +67,7 @@ function dataFromDocs(meta: DocumentData, expenseDocs: DocumentData[], historyDo
     expenses,
     history,
     actualIncome: meta.actualIncome ?? null,
+    activeMonth: typeof meta.activeMonth === "string" ? meta.activeMonth : null,
     memberUids: meta.memberUids,
     updatedAt: typeof meta.updatedAt?.toMillis === "function" ? meta.updatedAt.toMillis() : (meta.updatedAt ?? 0),
   };
@@ -144,6 +147,7 @@ export async function createHousehold(code: string, config: HouseholdConfig): Pr
     transaction.set(householdRef, firestoreSafe({
       config,
       actualIncome: null,
+      activeMonth: getYM(),
       memberUids: [user.uid],
       updatedAt: serverTimestamp(),
       schemaVersion: 2,
@@ -245,6 +249,7 @@ export async function pushHousehold(
     await setDoc(householdRef, firestoreSafe({
       config: data.config,
       actualIncome: data.actualIncome,
+      activeMonth: getYM(),
       memberUids: [user.uid],
       updatedAt: serverTimestamp(),
       schemaVersion: 2,
@@ -326,13 +331,43 @@ export async function restoreHousehold(code: string, input: RestoreData): Promis
 }
 
 /** Archives the current month and replaces active expenses with next month's recurring records. */
-export async function archiveMonth(code: string, snapshot: MonthSnapshot, recurring: Expense[]): Promise<void> {
+export async function initializeActiveMonth(code: string, month: string): Promise<void> {
+  const db = getDb();
+  const user = await ensureAnonymousAuth();
+  if (!db || !user) throw new Error("Firebase is not available.");
+  await runTransaction(db, async transaction => {
+    const ref = doc(db, "households", code);
+    const snap = await transaction.get(ref);
+    if (!snap.exists()) throw new Error("Household no longer exists.");
+    if (snap.data().activeMonth && snap.data().activeMonth !== month) {
+      throw new Error("Another device already started tracking a different month. Refresh first.");
+    }
+    if (!snap.data().activeMonth) {
+      transaction.update(ref, { activeMonth: month, updatedAt: serverTimestamp() });
+    }
+  });
+}
+
+/** Archives one month and prepares the next month's recurring records. */
+export async function archiveMonth(code: string, snapshot: MonthSnapshot, recurring: Expense[], nextMonth: string): Promise<void> {
   const db = getDb();
   const user = await ensureAnonymousAuth();
   if (!db) throw new Error("Firebase is not configured.");
   if (!user) throw new Error("Could not authenticate with Firebase.");
 
-  const active = await getDocs(expensesPath(db, code));
+  const [parent, existingArchive, active] = await Promise.all([
+    getDoc(doc(db, "households", code)),
+    getDoc(doc(archivedMonthsPath(db, code), snapshot.yearMonth)),
+    getDocs(expensesPath(db, code)),
+  ]);
+  if (!parent.exists()) throw new Error("Household no longer exists.");
+  if (parent.data().activeMonth && parent.data().activeMonth !== snapshot.yearMonth) {
+    throw new Error("This month changed on another device. Refresh before archiving.");
+  }
+  if (existingArchive.exists()) {
+    throw new Error("This month has already been archived. Refresh before continuing.");
+  }
+  if (nextMonth <= snapshot.yearMonth) throw new Error("The next month must be after the archived month.");
   const writes = [
     ...active.docs.map(item => ({ ref: item.ref, value: null as Expense | null })),
     ...recurring.map(item => ({ ref: doc(expensesPath(db, code), String(item.id)), value: item })),
@@ -341,7 +376,7 @@ export async function archiveMonth(code: string, snapshot: MonthSnapshot, recurr
     const batch = writeBatch(db);
     if (offset === 0) {
       batch.set(doc(archivedMonthsPath(db, code), snapshot.yearMonth), normalizeSnapshot(snapshot));
-      batch.update(doc(db, "households", code), { actualIncome: null, updatedAt: serverTimestamp() });
+      batch.update(doc(db, "households", code), { actualIncome: null, activeMonth: nextMonth, updatedAt: serverTimestamp() });
     }
     for (const write of writes.slice(offset, offset + 450)) {
       if (write.value) batch.set(write.ref, normalizeExpense(write.value));
@@ -353,7 +388,7 @@ export async function archiveMonth(code: string, snapshot: MonthSnapshot, recurr
   if (writes.length === 0) {
     const batch = writeBatch(db);
     batch.set(doc(archivedMonthsPath(db, code), snapshot.yearMonth), normalizeSnapshot(snapshot));
-    batch.update(doc(db, "households", code), { actualIncome: null, updatedAt: serverTimestamp() });
+    batch.update(doc(db, "households", code), { actualIncome: null, activeMonth: nextMonth, updatedAt: serverTimestamp() });
     await batch.commit();
   }
 }
