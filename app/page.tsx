@@ -9,9 +9,8 @@ import {
 } from "./lib/storage";
 import type { HouseholdConfig, Expense, MonthSnapshot, HouseholdEntry } from "./lib/types";
 import { getYM } from "./lib/utils";
-import { dateInMonth, followingMonth } from "./lib/insights";
 import { isFirebaseConfigured } from "./lib/firebase";
-import { createHousehold, deleteHousehold, subscribeToHousehold, pushHousehold, archiveMonth, initializeActiveMonth, type SetupResult } from "./lib/sync";
+import { createHousehold, deleteHousehold, subscribeToHousehold, pushHousehold, archiveMonth, type SetupResult } from "./lib/sync";
 import { HomeScreen }   from "./components/HomeScreen";
 import { SetupScreen }  from "./components/SetupScreen";
 import { DashView }     from "./components/DashView";
@@ -31,6 +30,7 @@ export default function HomePage() {
   const [history,       setHistory]       = useState<MonthSnapshot[]>([]);
   const [actualIncome,  setActualIncome]  = useState<number | null>(null);
   const [activeMonth,   setActiveMonth]   = useState<string | null>(null);
+  const [calendarMonth, setCalendarMonth] = useState(getYM());
   const [monthBusy,     setMonthBusy]     = useState(false);
   const [tab,           setTab]           = useState<"dash" | "history" | "settings">("dash");
   const [syncError,     setSyncError]     = useState("");
@@ -256,58 +256,52 @@ export default function HomePage() {
     clearLocalHousehold(householdCode);
   }
 
-  async function startTrackingCurrentMonth() {
-    if (!householdCode || !remoteReady) throw new Error("Household is not synced yet.");
-    setMonthBusy(true);
-    try {
-      await initializeActiveMonth(householdCode, getYM());
-      setActiveMonth(getYM());
-    } finally {
-      setMonthBusy(false);
-    }
-  }
-
   async function handleArchiveMonth() {
-    if (!householdCode || !config || !remoteReady || monthBusy) {
+    if (!householdCode || !remoteReady || !activeMonth || monthBusy) {
       throw new Error("Wait for household sync before archiving.");
     }
-    const sourceMonth = activeMonth ?? getYM();
-    const nextMonth = sourceMonth < getYM() ? getYM() : followingMonth(sourceMonth);
-    const snapshot: MonthSnapshot = { yearMonth: sourceMonth, config, expenses, actualIncome };
-    const recurring = expenses.filter(item => item.recurring).map((item, index) => ({
-      ...item,
-      id: Date.now() + index,
-      date: dateInMonth(item.date, nextMonth),
-    }));
+    const nextMonth = calendarMonth;
+    if (activeMonth >= nextMonth) return;
+    const sourceMonth = activeMonth;
     setMonthBusy(true);
     try {
-      await archiveMonth(householdCode, snapshot, recurring, nextMonth);
-      setHistory(current => [snapshot, ...current.filter(item => item.yearMonth !== sourceMonth)]);
-      setExpenses(recurring);
+      const result = await archiveMonth(householdCode, sourceMonth, nextMonth);
+      setHistory(current => [result.snapshot, ...current.filter(item => item.yearMonth !== sourceMonth)]);
+      setExpenses(result.recurring);
       setActualIncome(null);
       setActiveMonth(nextMonth);
+      setSyncError("");
     } finally {
       setMonthBusy(false);
     }
   }
 
-  // Automatically close tracked months when the app is opened after month-end.
-  // Historical households opt in once; no archival occurs for activeMonth=null.
+  // Check at startup, on tab refocus, and while an open tab crosses midnight.
   useEffect(() => {
-    if (!remoteReady || mode !== "app" || !householdCode || !config || !activeMonth
-      || activeMonth >= getYM() || monthBusy) return;
+    function refreshMonth() { setCalendarMonth(getYM()); }
+    const interval = window.setInterval(refreshMonth, 30_000);
+    window.addEventListener("focus", refreshMonth);
+    document.addEventListener("visibilitychange", refreshMonth);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshMonth);
+      document.removeEventListener("visibilitychange", refreshMonth);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!remoteReady || mode !== "app" || !householdCode || !activeMonth
+      || activeMonth >= calendarMonth || monthBusy) return;
     const attemptKey = `${householdCode}:${activeMonth}`;
     if (attemptedAutomaticRollover.current === attemptKey) return;
     attemptedAutomaticRollover.current = attemptKey;
     void handleArchiveMonth().catch(error => {
       const message = error instanceof Error ? error.message : "Automatic month archive failed.";
-      // Another member's phone may have completed the same archive first.
-      // Live Firestore subscriptions will then bring us into the new month.
-      if (!/already been archived|changed on another device/i.test(message)) {
+      if (!/already been archived|already changed by another device/i.test(message)) {
         setSyncError(message);
       }
     });
-  }, [remoteReady, mode, householdCode, config, activeMonth, expenses, monthBusy]);
+  }, [remoteReady, mode, householdCode, activeMonth, calendarMonth, monthBusy]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   if (!hydrated) return null;
@@ -355,12 +349,21 @@ export default function HomePage() {
 
   // Don't expose editable stale-month expenses while automatic archival runs.
   // If archival fails, return to the dashboard's manual retry control.
-  if (activeMonth && activeMonth < getYM() && !syncError) {
+  if (activeMonth && activeMonth < calendarMonth) {
     return (
       <div className="app-shell">
         <div className="phone-frame" style={{ paddingTop: 100, textAlign: "center" }}>
-          <h2>Starting {getYM().slice(0, 4)}'s current month</h2>
-          <p className="subtle">Safely moving the previous month into History. Your records are being preserved.</p>
+          <h2>Starting {calendarMonth}</h2>
+          {syncError ? (
+            <>
+              <p className="form-error" role="alert">{syncError}</p>
+              <button className="primary-action full" disabled={monthBusy}
+                onClick={() => void handleArchiveMonth().catch(error =>
+                  setSyncError(error instanceof Error ? error.message : "Archive failed."))}>
+                {monthBusy ? "Archiving..." : "Retry month archive"}
+              </button>
+            </>
+          ) : <p className="subtle">Safely moving the previous month into History. Your records are being preserved.</p>}
         </div>
       </div>
     );
@@ -377,9 +380,6 @@ export default function HomePage() {
             actualIncome={actualIncome}
             history={history}
             activeMonth={activeMonth}
-            monthBusy={monthBusy}
-            onStartTracking={startTrackingCurrentMonth}
-            onArchiveMonth={handleArchiveMonth}
             householdCode={householdCode!}
             onSyncError={setSyncError}
             onHome={goHome}
@@ -399,8 +399,6 @@ export default function HomePage() {
             actualIncome={actualIncome}
             setActualIncome={setActualIncome}
             activeMonth={activeMonth}
-            monthBusy={monthBusy}
-            onArchiveMonth={handleArchiveMonth}
             householdCode={householdCode}
             onDelete={permanentlyDeleteHousehold}
             onHome={goHome}
