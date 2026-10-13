@@ -34,6 +34,7 @@ export default function HomePage() {
   const [monthBusy,     setMonthBusy]     = useState(false);
   const [rolloverError, setRolloverError] = useState("");
   const [tab,           setTab]           = useState<"dash" | "history" | "settings">("dash");
+  const [addRequest,    setAddRequest]    = useState(0);
   const [syncError,     setSyncError]     = useState("");
   const [syncRetry,     setSyncRetry]     = useState(0);
   const [remoteReady,   setRemoteReady]   = useState(false);
@@ -384,6 +385,7 @@ export default function HomePage() {
             actualIncome={actualIncome}
             history={history}
             activeMonth={activeMonth}
+            addRequest={addRequest}
             householdCode={householdCode!}
             onSyncError={setSyncError}
             onHome={goHome}
@@ -410,7 +412,7 @@ export default function HomePage() {
           />
         )}
       </div>
-      <TabBar tab={tab} setTab={setTab} />
+      <TabBar tab={tab} setTab={setTab} onAdd={() => { setTab("dash"); setAddRequest(count => count + 1); }} />
     </div>
   );
 }
