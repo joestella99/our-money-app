@@ -1,17 +1,19 @@
 ﻿"use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Expense, HouseholdConfig } from "../lib/types";
 import { todayISO } from "../lib/utils";
 
 export function ExpenseFormSheet({
   config,
   initial,
+  recentExpenses = [],
   onSave,
   onClose,
 }: {
   config: HouseholdConfig;
   initial?: Expense;
+  recentExpenses?: Expense[];
   onSave: (e: Expense) => Promise<void | boolean>;
   onClose: () => void;
 }) {
@@ -23,7 +25,36 @@ export function ExpenseFormSheet({
   const [date,      setDate]      = useState(initial?.date ?? todayISO());
   const [note,      setNote]      = useState(initial?.note ?? "");
   const [recurring, setRecurring] = useState(initial?.recurring ?? false);
+  const [categoryTouched, setCategoryTouched] = useState(false);
+  const [payerTouched, setPayerTouched] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  const quickEntries = useMemo(() => {
+    const latest = [...recentExpenses].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
+    const unique = new Map<string, Expense>();
+    for (const item of latest) {
+      const key = item.description.trim().toLocaleLowerCase();
+      if (key && !unique.has(key)) unique.set(key, item);
+    }
+    return [...unique.values()].slice(0, 12);
+  }, [recentExpenses]);
+
+  const suggested = quickEntries.filter(item =>
+    !desc.trim() || item.description.toLocaleLowerCase().includes(desc.trim().toLocaleLowerCase())
+  ).slice(0, 4);
+
+  function fillFromRecent(item: Expense, updateDescription: boolean) {
+    if (updateDescription) setDesc(item.description);
+    if (!categoryTouched && config.budgets.some(budget => budget.category === item.category)) setCat(item.category);
+    if (!payerTouched && (config.members.includes(item.paidBy) || item.paidBy === "Joint")) setPaidBy(item.paidBy);
+  }
+
+  function changeDescription(value: string) {
+    setDesc(value);
+    if (isEdit) return;
+    const exact = quickEntries.find(item => item.description.toLocaleLowerCase() === value.trim().toLocaleLowerCase());
+    if (exact) fillFromRecent(exact, false);
+  }
   const [saveError, setSaveError] = useState("");
 
   async function submit() {
@@ -75,15 +106,23 @@ export function ExpenseFormSheet({
         </div>
 
         <label>Description</label>
-        <input className="field" value={desc} onChange={e => setDesc(e.target.value)}
+        <input className="field" value={desc} onChange={e => changeDescription(e.target.value)}
           placeholder="What was this?" autoFocus={isEdit} />
+        {!isEdit && suggested.length > 0 && (
+          <div className="quick-entry-chips" aria-label="Recent descriptions">
+            {suggested.map(item => (
+              <button type="button" key={item.description.toLocaleLowerCase()} className="quick-entry-chip"
+                onClick={() => fillFromRecent(item, true)}>{item.description}</button>
+            ))}
+          </div>
+        )}
 
         <label>Date</label>
         <input type="date" className="field" value={date} onChange={e => setDate(e.target.value)} />
 
         {config.budgets.length > 0 && <>
           <label>Category</label>
-          <select className="field" value={cat} onChange={e => setCat(e.target.value)}>
+          <select className="field" value={cat} onChange={e => { setCategoryTouched(true); setCat(e.target.value); }}>
             {config.budgets.map(b => <option key={b.category}>{b.category}</option>)}
             <option value="Uncategorized">Uncategorized</option>
           </select>
@@ -99,7 +138,7 @@ export function ExpenseFormSheet({
             <div className="segmented"
               style={{ gridTemplateColumns: `repeat(${Math.min(payers.length, 4)}, 1fr)` }}>
               {payers.map(m => (
-                <button key={m} className={paidBy === m ? "active" : ""} onClick={() => setPaidBy(m)}>
+                <button key={m} className={paidBy === m ? "active" : ""} onClick={() => { setPayerTouched(true); setPaidBy(m); }}>
                   {m}
                 </button>
               ))}
