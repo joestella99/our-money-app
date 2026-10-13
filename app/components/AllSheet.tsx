@@ -23,6 +23,11 @@ export function AllSheet({
   const [sort,   setSort]   = useState<SortKey>("date-desc");
   const [category, setCategory] = useState<string | null>(initialCategory);
   const categories = useMemo(() => [...new Set(expenses.map(expense => expense.category))].sort(), [expenses]);
+  // A budget category may have no recorded expenses yet. Keep its filter
+  // visible and always expose "All" so the empty list never traps the user.
+  const visibleCategories = category && !categories.includes(category)
+    ? [category, ...categories]
+    : categories;
 
   const filtered = useMemo(() => {
     let list = [...expenses];
@@ -73,10 +78,10 @@ export function AllSheet({
           </select>
         </div>
 
-        {categories.length > 1 && (
+        {(visibleCategories.length > 1 || category !== null) && (
           <div className="category-filter-scroll" aria-label="Filter by category">
             <button className={category === null ? "filter-chip selected" : "filter-chip"} onClick={() => setCategory(null)}>All</button>
-            {categories.map(item => (
+            {visibleCategories.map(item => (
               <button key={item} className={category === item ? "filter-chip selected" : "filter-chip"}
                 onClick={() => setCategory(item)}>{item}</button>
             ))}
@@ -91,7 +96,7 @@ export function AllSheet({
 
         <div className="transaction-list">
           {filtered.length === 0 ? (
-            <p className="empty-state">{search ? "No matches." : "No expenses yet."}</p>
+            <p className="empty-state">{search ? "No matching expenses." : category ? `No expenses in ${category} yet. Choose All to view every expense.` : "No expenses yet."}</p>
           ) : (
             filtered.map((e) => (
               <ExpenseRow
