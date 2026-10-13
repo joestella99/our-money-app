@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { MonthSnapshot } from "../lib/types";
-import { money, labelYM, fmtDate, getYM } from "../lib/utils";
+import { money, moneyExact, labelYM, fmtDate, getYM } from "../lib/utils";
 import { Stat } from "./Shared";
 import { spendByCategory, spendByDescription } from "../lib/insights";
 
@@ -289,7 +289,7 @@ function MonthDetail({
                 <span>{e.category} &middot; {e.paidBy} &middot; {fmtDate(e.date)}</span>
                 {e.note && <span className="expense-note">{e.note}</span>}
               </div>
-              <div><strong>{money(e.amount)}</strong></div>
+              <div><strong>{moneyExact(e.amount)}</strong></div>
             </div>
           ))}
         </div>
