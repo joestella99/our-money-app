@@ -38,6 +38,7 @@ export default function HomePage() {
   const [remoteReady,   setRemoteReady]   = useState(false);
 
   const setupInProgress = useRef(false);
+  const attemptedAutomaticRollover = useRef<string | null>(null);
 
   // ── Hydrate ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -289,6 +290,24 @@ export default function HomePage() {
       setMonthBusy(false);
     }
   }
+
+  // Automatically close tracked months when the app is opened after month-end.
+  // Historical households opt in once; no archival occurs for activeMonth=null.
+  useEffect(() => {
+    if (!remoteReady || mode !== "app" || !householdCode || !config || !activeMonth
+      || activeMonth >= getYM() || monthBusy) return;
+    const attemptKey = `${householdCode}:${activeMonth}`;
+    if (attemptedAutomaticRollover.current === attemptKey) return;
+    attemptedAutomaticRollover.current = attemptKey;
+    void handleArchiveMonth().catch(error => {
+      const message = error instanceof Error ? error.message : "Automatic month archive failed.";
+      // Another member's phone may have completed the same archive first.
+      // Live Firestore subscriptions will then bring us into the new month.
+      if (!/already been archived|changed on another device/i.test(message)) {
+        setSyncError(message);
+      }
+    });
+  }, [remoteReady, mode, householdCode, config, activeMonth, expenses, monthBusy]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   if (!hydrated) return null;
