@@ -57,6 +57,18 @@ export function ExpenseFormSheet({
   }
   const [saveError, setSaveError] = useState("");
 
+  function attemptClose() {
+    if (saving) return;
+    const dirty = amount !== (initial ? String(initial.amount) : "")
+      || desc !== (initial?.description ?? "")
+      || cat !== (initial?.category ?? config.budgets[0]?.category ?? "Uncategorized")
+      || paidBy !== (initial?.paidBy ?? config.members[0] ?? "")
+      || date !== (initial?.date ?? todayISO())
+      || note !== (initial?.note ?? "")
+      || recurring !== (initial?.recurring ?? false);
+    if (!dirty || window.confirm("Discard unsaved expense changes?")) onClose();
+  }
+
   async function submit() {
     const a = Number(amount);
     const missing: string[] = [];
@@ -92,7 +104,7 @@ export function ExpenseFormSheet({
   }
 
   return (
-    <div className="overlay" onClick={() => { if (!saving) onClose(); }}>
+    <div className="overlay" onClick={attemptClose}>
       <div className="sheet expense-sheet" role="dialog" aria-modal="true" aria-labelledby="expense-sheet-title" onClick={e => e.stopPropagation()}>
         <div className="sheet-drag-handle" aria-hidden="true" />
         <div className="sheet-header">
@@ -100,7 +112,7 @@ export function ExpenseFormSheet({
             <span className="sheet-eyebrow">OUR MONEY</span>
             <h2 id="expense-sheet-title">{isEdit ? "Edit expense" : "New expense"}</h2>
           </div>
-          <button className="pill-button" type="button" disabled={saving} onClick={onClose}>Done</button>
+          <button className="pill-button" type="button" disabled={saving} onClick={attemptClose}>Close</button>
         </div>
 
         <label htmlFor="expense-amount">Amount</label>
