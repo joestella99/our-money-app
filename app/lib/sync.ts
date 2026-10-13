@@ -354,43 +354,42 @@ export async function archiveMonth(code: string, snapshot: MonthSnapshot, recurr
   const user = await ensureAnonymousAuth();
   if (!db) throw new Error("Firebase is not configured.");
   if (!user) throw new Error("Could not authenticate with Firebase.");
-
-  const [parent, existingArchive, active] = await Promise.all([
-    getDoc(doc(db, "households", code)),
-    getDoc(doc(archivedMonthsPath(db, code), snapshot.yearMonth)),
-    getDocs(expensesPath(db, code)),
-  ]);
-  if (!parent.exists()) throw new Error("Household no longer exists.");
-  if (parent.data().activeMonth && parent.data().activeMonth !== snapshot.yearMonth) {
-    throw new Error("This month changed on another device. Refresh before archiving.");
-  }
-  if (existingArchive.exists()) {
-    throw new Error("This month has already been archived. Refresh before continuing.");
-  }
   if (nextMonth <= snapshot.yearMonth) throw new Error("The next month must be after the archived month.");
-  const writes = [
-    ...active.docs.map(item => ({ ref: item.ref, value: null as Expense | null })),
-    ...recurring.map(item => ({ ref: doc(expensesPath(db, code), String(item.id)), value: item })),
-  ];
-  for (let offset = 0; offset < writes.length; offset += 450) {
-    const batch = writeBatch(db);
-    if (offset === 0) {
-      batch.set(doc(archivedMonthsPath(db, code), snapshot.yearMonth), normalizeSnapshot(snapshot));
-      batch.update(doc(db, "households", code), { actualIncome: null, activeMonth: nextMonth, updatedAt: serverTimestamp() });
-    }
-    for (const write of writes.slice(offset, offset + 450)) {
-      if (write.value) batch.set(write.ref, normalizeExpense(write.value));
-      else batch.delete(write.ref);
-    }
-    await batch.commit();
+
+  // Read the active records first, then commit the entire transition atomically.
+  // No partial month rollover is possible: if we cannot commit, the old month
+  // remains intact and a later app visit can retry safely.
+  const active = await getDocs(expensesPath(db, code));
+  const parentRef = doc(db, "households", code);
+  const archiveRef = doc(archivedMonthsPath(db, code), snapshot.yearMonth);
+  const writesNeeded = active.size + recurring.length + 2;
+  // Firestore transactions have a 500 write limit. Keep some headroom.
+  if (writesNeeded > 450) {
+    throw new Error("This month has too many entries to archive safely in one operation. Export a backup and contact support before continuing.");
   }
-  // An expense-free month still needs its archive and income reset committed.
-  if (writes.length === 0) {
-    const batch = writeBatch(db);
-    batch.set(doc(archivedMonthsPath(db, code), snapshot.yearMonth), normalizeSnapshot(snapshot));
-    batch.update(doc(db, "households", code), { actualIncome: null, activeMonth: nextMonth, updatedAt: serverTimestamp() });
-    await batch.commit();
-  }
+
+  await runTransaction(db, async transaction => {
+    const parent = await transaction.get(parentRef);
+    const archive = await transaction.get(archiveRef);
+    if (!parent.exists()) throw new Error("Household no longer exists.");
+    if (parent.data().activeMonth && parent.data().activeMonth !== snapshot.yearMonth) {
+      throw new Error("This month changed on another device. Refresh to see the latest data.");
+    }
+    if (archive.exists()) {
+      throw new Error("This month has already been archived on another device.");
+    }
+
+    transaction.set(archiveRef, normalizeSnapshot(snapshot));
+    for (const existing of active.docs) transaction.delete(existing.ref);
+    for (const record of recurring) {
+      transaction.set(doc(expensesPath(db, code), String(record.id)), normalizeExpense(record));
+    }
+    transaction.update(parentRef, {
+      actualIncome: null,
+      activeMonth: nextMonth,
+      updatedAt: serverTimestamp(),
+    });
+  });
 }
 
 /** Permanently removes the household and all client-owned subcollection data. */
