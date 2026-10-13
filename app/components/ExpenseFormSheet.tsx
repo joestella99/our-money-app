@@ -93,20 +93,24 @@ export function ExpenseFormSheet({
 
   return (
     <div className="overlay" onClick={() => { if (!saving) onClose(); }}>
-      <div className="sheet" onClick={e => e.stopPropagation()}>
+      <div className="sheet expense-sheet" role="dialog" aria-modal="true" aria-labelledby="expense-sheet-title" onClick={e => e.stopPropagation()}>
+        <div className="sheet-drag-handle" aria-hidden="true" />
         <div className="sheet-header">
-          <h2>{isEdit ? "Edit expense" : "Add expense"}</h2>
-          <button className="pill-button" disabled={saving} onClick={onClose}>Close</button>
+          <div>
+            <span className="sheet-eyebrow">OUR MONEY</span>
+            <h2 id="expense-sheet-title">{isEdit ? "Edit expense" : "New expense"}</h2>
+          </div>
+          <button className="pill-button" type="button" disabled={saving} onClick={onClose}>Done</button>
         </div>
 
-        <label>Amount</label>
-        <div className="money-input"><span>$</span>
-          <input value={amount} onChange={e => setAmount(e.target.value)}
+        <label htmlFor="expense-amount">Amount</label>
+        <div className="money-input expense-amount-input"><span>$</span>
+          <input id="expense-amount" aria-label="Expense amount in dollars" value={amount} onChange={e => setAmount(e.target.value)}
             inputMode="decimal" type="number" min="0.01" step="0.01" placeholder="0" autoFocus={!isEdit} />
         </div>
 
-        <label>Description</label>
-        <input className="field" value={desc} onChange={e => changeDescription(e.target.value)}
+        <label htmlFor="expense-description">Description</label>
+        <input id="expense-description" className="field" value={desc} onChange={e => changeDescription(e.target.value)}
           placeholder="What was this?" autoFocus={isEdit} />
         {!isEdit && suggested.length > 0 && (
           <div className="quick-entry-chips" aria-label="Recent descriptions">
@@ -117,16 +121,19 @@ export function ExpenseFormSheet({
           </div>
         )}
 
-        <label>Date</label>
-        <input type="date" className="field" value={date} onChange={e => setDate(e.target.value)} />
-
-        {config.budgets.length > 0 && <>
-          <label>Category</label>
-          <select className="field" value={cat} onChange={e => { setCategoryTouched(true); setCat(e.target.value); }}>
-            {config.budgets.map(b => <option key={b.category}>{b.category}</option>)}
-            <option value="Uncategorized">Uncategorized</option>
-          </select>
-        </>}
+        <div className="form-dual-fields">
+          <div>
+            <label htmlFor="expense-date">Date</label>
+            <input id="expense-date" type="date" className="field" value={date} onChange={e => setDate(e.target.value)} />
+          </div>
+          {config.budgets.length > 0 && <div>
+            <label htmlFor="expense-category">Category</label>
+            <select id="expense-category" className="field" value={cat} onChange={e => { setCategoryTouched(true); setCat(e.target.value); }}>
+              {config.budgets.map(b => <option key={b.category} value={b.category}>{b.category}</option>)}
+              <option value="Uncategorized">Uncategorized</option>
+            </select>
+          </div>}
+        </div>
 
         {/* Always include Joint so shared expenses can always be marked */}
         {config.members.length >= 1 && (() => {
@@ -134,7 +141,7 @@ export function ExpenseFormSheet({
             ? config.members
             : [...config.members, "Joint"];
           return <>
-            <label>Paid by</label>
+            <label>Paid by <span className="label-hint">· for your records, not a debt split</span></label>
             <div className="segmented"
               style={{ gridTemplateColumns: `repeat(${Math.min(payers.length, 4)}, 1fr)` }}>
               {payers.map(m => (
@@ -146,17 +153,17 @@ export function ExpenseFormSheet({
           </>;
         })()}
 
-        <label>
-          Note{" "}
-          <span style={{ color: "var(--muted-2)", fontWeight: "normal", fontSize: "0.78rem" }}>optional</span>
-        </label>
-        <textarea
-          className="field note-area"
-          value={note}
-          onChange={e => setNote(e.target.value)}
-          placeholder="Add a note..."
-          rows={2}
-        />
+        <details className="optional-note" open={Boolean(initial?.note) || undefined}>
+          <summary>Add a note <span>Optional</span></summary>
+          <textarea
+            aria-label="Expense note"
+            className="field note-area"
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            placeholder="Anything you'd like to remember..."
+            rows={2}
+          />
+        </details>
 
         <div className="recurring-row">
           <div>
@@ -173,7 +180,7 @@ export function ExpenseFormSheet({
         </div>
 
         {saveError && <p className="form-error" role="alert">{saveError}</p>}
-        <button className="primary-action full" disabled={saving} onClick={() => void submit()}>
+        <button className="primary-action full save-expense-action" disabled={saving} onClick={() => void submit()}>
           {saving ? "Saving..." : isEdit ? "Save changes" : "Add expense"}
         </button>
       </div>
