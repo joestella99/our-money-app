@@ -1,7 +1,7 @@
 "use client";
 
 import type { Expense } from "../lib/types";
-import { money, fmtDate } from "../lib/utils";
+import { moneyExact, fmtDate } from "../lib/utils";
 
 export function Stat({ label, value, accent }: { label: string; value: string; accent?: "pos" | "neg" }) {
   return (
@@ -40,7 +40,7 @@ export function ExpenseRow({
         {expense.note && <span className="expense-note">{expense.note}</span>}
       </button>
       <div className="transaction-right">
-        <strong>{money(expense.amount)}</strong>
+        <strong>{moneyExact(expense.amount)}</strong>
         <div className="transaction-actions">
           {onDuplicate && (
             <button type="button" className="action-btn"
