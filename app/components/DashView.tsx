@@ -16,6 +16,7 @@ export function DashView({
   actualIncome,
   history,
   activeMonth,
+  addRequest,
   householdCode,
   onSyncError,
   onHome,
@@ -26,12 +27,14 @@ export function DashView({
   actualIncome: number | null;
   history: MonthSnapshot[];
   activeMonth: string | null;
+  addRequest: number;
   householdCode: string;
   onSyncError: (message: string) => void;
   onHome: () => void;
 }) {
   const [showAdd,   setShowAdd]   = useState(false);
   const [showAll,   setShowAll]   = useState(false);
+  useEffect(() => { if (addRequest > 0) setShowAdd(true); }, [addRequest]);
   const [editing,   setEditing]   = useState<Expense | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [expenseError, setExpenseError] = useState("");
@@ -87,19 +90,6 @@ export function DashView({
       : [...config.members, "Joint"];
     return config.members;
   }, [config.members, expenses]);
-
-  const settlement = useMemo(() => {
-    const people = config.members.filter(m => m.toLowerCase() !== "joint");
-    if (people.length !== 2) return null;
-    const [a, b] = people;
-    const aPaid = memberTotals[a] || 0;
-    const bPaid = memberTotals[b] || 0;
-    const halfDifference = Math.abs(aPaid - bPaid) / 2;
-    if (halfDifference < 0.5) return { even: true as const, a, b, amount: 0, from: "", to: "" };
-    return aPaid > bPaid
-      ? { even: false as const, a, b, amount: halfDifference, from: b, to: a }
-      : { even: false as const, a, b, amount: halfDifference, from: a, to: b };
-  }, [config.members, memberTotals]);
 
   const savingsVariance = projectedSavings - config.monthlySavingsGoal;
   const dailyRate = forecast.variableDailyRate;
@@ -167,22 +157,43 @@ export function DashView({
   return (
     <>
       <header className="topbar">
-        <div>
-          <button className="home-link" onClick={onHome}>
-            <div className="eyebrow">&#x2190; {config.name}</div>
+        <div className="dashboard-brand">
+          <button className="home-link" onClick={onHome} aria-label="Switch household">
+            <span className="brand-mark" aria-hidden="true">↗</span>
+            <span className="brand-name">{config.name}<span className="brand-chevron">⌄</span></span>
           </button>
-          <h1>{labelYM(activeMonth ?? getYM())}</h1>
-          <div className="subtle">
-            Monthly budget
-            {actualIncome !== null && <span className="income-override"> &middot; income adjusted</span>}
+          <div className="dashboard-title-row">
+            <div>
+              <div className="overline">YOUR MONTHLY OVERVIEW</div>
+              <h1>{labelYM(activeMonth ?? getYM())}</h1>
+            </div>
+            <span className="month-status"><span className="status-dot" />Current</span>
           </div>
+          {actualIncome !== null && <div className="income-override">Custom income this month</div>}
         </div>
       </header>
 
-      <section className="hero-card">
-        <div className="eyebrow">Safe to spend</div>
-        <div className="hero-amount" style={safeToSpend < 0 ? { color: "#f87171" } : undefined}>{money(safeToSpend)}</div>
-        <div className="subtle">{safeToSpend < 0 ? "Spending plus reserved budgets exceeds your take-home after your savings goal." : `After savings + ${money(remainingBudgetReserve)} reserved for remaining budgets`}</div>
+      <section className="hero-card" aria-label="Monthly spending buffer">
+        <div className="hero-topline">
+          <span className="hero-kicker"><span className="hero-kicker-dot" /> READY TO SPEND</span>
+          <span className="hero-period">THIS MONTH</span>
+        </div>
+        <div className="hero-label">Safe to spend</div>
+        <div className="hero-amount" style={safeToSpend < 0 ? { color: "#ffa7a6" } : undefined}>{money(safeToSpend)}</div>
+        <p className="hero-description">
+          {safeToSpend < 0
+            ? "Your spending and reserved budgets are above what is available after savings."
+            : "Your extra room after savings and the rest of your planned budgets."}
+        </p>
+        <div className="hero-divider" />
+        <div className="hero-metrics">
+          <div><span>Spent so far</span><strong>{money(totalSpent)}</strong></div>
+          <div><span>Still reserved</span><strong>{money(remainingBudgetReserve)}</strong></div>
+        </div>
+        <div className="hero-track" role="progressbar" aria-label="Monthly take-home spent" aria-valuemin={0}
+          aria-valuemax={100} aria-valuenow={Math.round(Math.min(Math.max(effectiveIncome > 0 ? totalSpent / effectiveIncome * 100 : 0, 0), 100))}>
+          <div className="hero-track-fill" style={{ width: `${Math.min(Math.max(effectiveIncome > 0 ? totalSpent / effectiveIncome * 100 : 0, 0), 100)}%` }} />
+        </div>
       </section>
 
       {budgetAlerts.length > 0 && (
@@ -218,10 +229,27 @@ export function DashView({
         </span>
       </div>
 
+      <section className="section">
+        <div className="section-heading">
+          <h2>Recent activity</h2>
+          <button className="text-button" onClick={() => setShowAll(true)}>View all <span aria-hidden="true">↗</span></button>
+        </div>
+        <div className="transaction-list">
+          {expenseError && <p className="form-error" role="alert">Firebase error: {expenseError}</p>}
+          {expenses.length === 0
+            ? <p className="empty-state">No expenses yet &mdash; tap Add expense to get started.</p>
+            : expenses.slice(0, 5).map(e => (
+                <ExpenseRow key={e.id} expense={e}
+                  onEdit={setEditing} onDuplicate={duplicateExpense} onDelete={deleteExpense} />
+              ))}
+        </div>
+      </section>
+
+
       {config.budgets.length > 0 && (
         <section className="section">
           <div className="section-heading">
-            <h2>Categories</h2>
+            <h2>Your categories</h2>
             <span className="velocity">{currentMonthOpen ? `${money(Math.round(dailyRate))}/day variable · ${money(projectedTotal)} est.` : "Current entries"}</span>
           </div>
           <div className="budget-list">
@@ -233,7 +261,9 @@ export function DashView({
               return (
                 <div className="budget-row" key={category}>
                   <div className="budget-meta">
-                    <div>
+                    <div className="category-title">
+                      <span className="category-avatar" aria-hidden="true">{category.slice(0, 1).toUpperCase()}</span>
+                      <div className="category-info">
                       <strong>{category}</strong>
                       <span>
                         {money(spent)} of {money(amount)} &middot;{" "}
@@ -241,8 +271,9 @@ export function DashView({
                           ? <span className="over-badge">{money(Math.abs(remaining))} over</span>
                           : <span className="remaining-pos">{money(remaining)} left</span>}
                       </span>
+                      </div>
                     </div>
-                    <span style={over ? { color: "#f87171" } : {}}>{Math.round(pct)}%</span>
+                    <span className="category-percent" style={over ? { color: "#fb8176" } : {}}>{Math.round(pct)}%</span>
                   </div>
                   <div className="progress">
                     <div className="progress-fill"
@@ -306,53 +337,21 @@ export function DashView({
       {config.members.length > 0 && (
         <section className="section">
           <div className="section-heading">
-            <h2>Who paid</h2>
-            <span>this month</span>
+            <h2>Payment sources</h2>
+            <span>Amount paid · not balances owed</span>
           </div>
           <div className="payer-grid">
             {payerDisplay.map(m => <Stat key={m} label={m} value={money(memberTotals[m] || 0)} />)}
           </div>
-          {settlement && (
-            <div className="settlement-card">
-              <div>
-                <div className="eyebrow">50/50 shared balance</div>
-                <strong>{settlement.even ? "You're even" : `${settlement.from} is ${money(settlement.amount)} behind`}</strong>
-              </div>
-              <span>
-                {settlement.even
-                  ? "No settle-up needed"
-                  : `${settlement.from} → ${settlement.to}`}
-              </span>
-            </div>
-          )}
+
         </section>
       )}
-
-      <section className="section">
-        <div className="section-heading">
-          <h2>Recent</h2>
-          <button className="text-button" onClick={() => setShowAll(true)}>See all</button>
-        </div>
-        <div className="transaction-list">
-          {expenseError && <p className="form-error" role="alert">Firebase error: {expenseError}</p>}
-          {expenses.length === 0
-            ? <p className="empty-state">No expenses yet &mdash; tap Add expense to get started.</p>
-            : expenses.slice(0, 5).map(e => (
-                <ExpenseRow key={e.id} expense={e}
-                  onEdit={setEditing} onDuplicate={duplicateExpense} onDelete={deleteExpense} />
-              ))}
-        </div>
-      </section>
 
       <div className="bottom-spacer" />
       {lastDeleted && <div className="undo-toast" role="status">
         <span>Deleted {lastDeleted.description}</span>
         <button onClick={() => void undoDelete()}>Undo</button>
       </div>}
-
-      <div className="floating-actions">
-        <button className="primary-action" onClick={() => setShowAdd(true)}>+ Add expense</button>
-      </div>
 
       {showAdd && (
         <ExpenseFormSheet config={config} recentExpenses={[...expenses, ...history.slice(0, 2).flatMap(item => item.expenses)]}
