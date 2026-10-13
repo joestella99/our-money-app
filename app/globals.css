@@ -1749,3 +1749,42 @@ textarea:focus-visible, summary:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* Final visual polish — restrained interactive feedback and depth. */
+.home-switch, .budget-row-action, .transaction-row, .history-card,
+.primary-action, .tab-bar button, .stat-card, .filter-chip {
+  transition: border-color .18s ease, background-color .18s ease,
+    box-shadow .18s ease, transform .18s ease, color .18s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .home-switch:hover { border-color: rgba(180,244,197,.4); background: #26363e; }
+  .budget-row-action:hover {
+    transform: translateY(-2px);
+    border-color: rgba(180,244,197,.24);
+    box-shadow: 0 9px 24px rgba(0,0,0,.13);
+  }
+  .transaction-row:hover { border-color: rgba(180,244,197,.2); }
+  .primary-action:hover { box-shadow: 0 13px 33px rgba(121,210,157,.16); }
+  .history-card:hover { border-color: rgba(180,244,197,.23); }
+}
+.stat-card { position: relative; overflow: hidden; }
+.stat-card::before {
+  content: "";
+  position: absolute;
+  width: 68px;
+  height: 68px;
+  top: -44px;
+  right: -30px;
+  border-radius: 50%;
+  background: rgba(180,244,197,.055);
+  filter: blur(2px);
+  pointer-events: none;
+}
+.hero-card, .stat-card, .budget-row-action { -webkit-tap-highlight-color: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes our-money-enter {
+    from { opacity: .65; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .hero-card { animation: our-money-enter .4s ease-out both; }
+}
