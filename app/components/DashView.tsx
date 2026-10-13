@@ -62,9 +62,10 @@ export function DashView({
   const { safeToSpend, onBudgetSavings, remainingBudget } = outlook;
   const savingsVariance = outlook.versusGoal;
   const totalBudget = config.budgets.reduce((sum, item) => sum + item.amount, 0);
-  const spentPercent = totalBudget > 0
-    ? Math.min(100, Math.max(0, Math.round((totalSpent / totalBudget) * 100)))
+  const actualSpentPercent = totalBudget > 0
+    ? Math.max(0, Math.round((totalSpent / totalBudget) * 100))
     : 0;
+  const spentPercent = Math.min(100, actualSpentPercent);
   const topFrequent = useMemo(
     () => spendByDescription(expenses)
       .sort((a, b) => b.count - a.count || b.amount - a.amount)
@@ -174,10 +175,10 @@ export function DashView({
           </div>
           <div
             className="budget-donut"
-            style={{ background: `conic-gradient(var(--accent) 0 ${spentPercent}%, rgba(255,255,255,.12) ${spentPercent}% 100%)` }}
-            role="img" aria-label={`${spentPercent}% of monthly budget spent`}
+            style={{ background: `conic-gradient(${actualSpentPercent > 100 ? "var(--negative)" : "var(--accent)"} 0 ${spentPercent}%, rgba(255,255,255,.12) ${spentPercent}% 100%)` }}
+            role="img" aria-label={`${actualSpentPercent}% of monthly budget spent`}
           >
-            <div>{spentPercent}%</div>
+            <div>{actualSpentPercent}%</div>
           </div>
         </div>
       </section>
@@ -310,7 +311,7 @@ export function DashView({
       </div>
 
       {showAdd && (
-        <ExpenseFormSheet config={config} recentExpenses={[...expenses, ...history.slice(0, 2).flatMap(item => item.expenses)]}
+        <ExpenseFormSheet config={config} householdCode={householdCode} recentExpenses={[...expenses, ...history.slice(0, 2).flatMap(item => item.expenses)]}
           onSave={persistExpense} onClose={() => setShowAdd(false)} />
       )}
       {showAll && (
@@ -319,7 +320,7 @@ export function DashView({
           onClose={() => { setShowAll(false); setSelectedCategory(null); }} />
       )}
       {editing && (
-        <ExpenseFormSheet config={config} initial={editing}
+        <ExpenseFormSheet config={config} householdCode={householdCode} initial={editing}
           onSave={persistExpense} onClose={() => setEditing(null)} />
       )}
     </main>
