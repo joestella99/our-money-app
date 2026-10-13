@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { MonthSnapshot } from "../lib/types";
 import { money, labelYM, fmtDate, getYM } from "../lib/utils";
 import { Stat } from "./Shared";
+import { spendByCategory, spendByDescription } from "../lib/insights";
 
 export function HistoryView({ history }: { history: MonthSnapshot[] }) {
   const [detail,    setDetail]    = useState<MonthSnapshot | null>(null);
@@ -11,6 +12,10 @@ export function HistoryView({ history }: { history: MonthSnapshot[] }) {
 
   const currentYear = getYM().slice(0, 4);
   const ytdMonths   = history.filter(s => s.yearMonth.startsWith(currentYear));
+  const recentMonths = [...history].sort((a, b) => b.yearMonth.localeCompare(a.yearMonth)).slice(0, 3);
+  const recentExpenses = recentMonths.flatMap(month => month.expenses);
+  const leadingCategories = spendByCategory(recentExpenses).slice(0, 5);
+  const leadingMerchants = spendByDescription(recentExpenses).slice(0, 3);
 
   function calcTotals(months: typeof history) {
     return {
@@ -87,6 +92,57 @@ export function HistoryView({ history }: { history: MonthSnapshot[] }) {
             </div>
           </div>
         </div>
+      )}
+
+      {recentMonths.length > 0 && (
+        <section className="section" style={{ marginBottom: 26 }}>
+          <div className="section-heading">
+            <h2>Spending trends</h2>
+            <span>last {recentMonths.length} archived month{recentMonths.length === 1 ? "" : "s"}</span>
+          </div>
+          <div className="insights-list">
+            <div className="insight-tile">
+              <span className="insight-label">Top categories over this period</span>
+              {leadingCategories.map(item => (
+                <div className="insight-rank-row" key={item.name}>
+                  <span>{item.name}</span><strong>{money(item.amount)}</strong>
+                  <div className="insight-bar">
+                    <div style={{ width: `${(item.amount / leadingCategories[0].amount) * 100}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="insight-tile">
+              <span className="insight-label">Category trend by month</span>
+              <div className="history-trend-table">
+                <div className="history-trend-row heading">
+                  <span>Category</span>
+                  {recentMonths.map(month => <span key={month.yearMonth}>{labelYM(month.yearMonth).split(" ")[0].slice(0, 3)}</span>)}
+                </div>
+                {leadingCategories.map(cat => (
+                  <div className="history-trend-row" key={cat.name}>
+                    <span>{cat.name}</span>
+                    {recentMonths.map(month => (
+                      <span key={month.yearMonth}>
+                        {money(month.expenses.filter(expense => expense.category === cat.name).reduce((sum, item) => sum + item.amount, 0))}
+                      </span>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {leadingMerchants.length > 0 && (
+              <div className="insight-tile">
+                <span className="insight-label">Top places / descriptions</span>
+                {leadingMerchants.map(item => (
+                  <div className="insight-summary" key={item.name}>
+                    <span>{item.name} ({item.count})</span><strong>{money(item.amount)}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
       )}
 
       {history.length === 0 ? (
