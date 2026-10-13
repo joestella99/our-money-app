@@ -16,9 +16,6 @@ export function DashView({
   actualIncome,
   history,
   activeMonth,
-  monthBusy,
-  onStartTracking,
-  onArchiveMonth,
   householdCode,
   onSyncError,
   onHome,
@@ -29,9 +26,6 @@ export function DashView({
   actualIncome: number | null;
   history: MonthSnapshot[];
   activeMonth: string | null;
-  monthBusy: boolean;
-  onStartTracking: () => Promise<void>;
-  onArchiveMonth: () => Promise<void>;
   householdCode: string;
   onSyncError: (message: string) => void;
   onHome: () => void;
@@ -41,7 +35,6 @@ export function DashView({
   const [editing,   setEditing]   = useState<Expense | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [expenseError, setExpenseError] = useState("");
-  const [monthError, setMonthError] = useState("");
   const [lastDeleted, setLastDeleted] = useState<Expense | null>(null);
   useEffect(() => {
     if (!lastDeleted) return;
@@ -130,7 +123,7 @@ export function DashView({
 
   async function persistExpense(expense: Expense) {
     try {
-      await setExpense(householdCode, expense);
+      await setExpense(householdCode, expense, activeMonth ?? getYM());
       setExpenses(current => [expense, ...current.filter(item => item.id !== expense.id)]);
       onSyncError("");
       setExpenseError("");
@@ -144,7 +137,7 @@ export function DashView({
   }
   async function deleteExpense(id: number) {
     try {
-      await deleteRemoteExpense(householdCode, id);
+      await deleteRemoteExpense(householdCode, id, activeMonth ?? getYM());
       const removed = expenses.find(item => item.id === id);
       setExpenses(current => current.filter(item => item.id !== id));
       if (removed) setLastDeleted(removed);
@@ -166,17 +159,6 @@ export function DashView({
       // persistExpense already shows a recoverable error.
     }
   }
-  async function beginTracking() {
-    setMonthError("");
-    try { await onStartTracking(); }
-    catch (error) { setMonthError(error instanceof Error ? error.message : "Could not enable month tracking."); }
-  }
-  async function rollToThisMonth() {
-    if (!activeMonth || !window.confirm(`Archive all current entries as ${labelYM(activeMonth)} and start ${labelYM(getYM())}? Your history will be preserved.`)) return;
-    setMonthError("");
-    try { await onArchiveMonth(); }
-    catch (error) { setMonthError(error instanceof Error ? error.message : "Could not archive the month."); }
-  }
   function duplicateExpense(e: Expense) {
     void persistExpense({ ...e, id: Date.now(), date: todayISO() }).catch(() => {});
   }
@@ -196,20 +178,6 @@ export function DashView({
           </div>
         </div>
       </header>
-
-      {(activeMonth === null || activeMonth < getYM()) && (
-        <section className="month-rollover">
-          <strong>{activeMonth === null ? "Set up monthly tracking" : `${labelYM(activeMonth)} is still open`}</strong>
-          <p>{activeMonth === null
-            ? "This household predates month tracking. Review existing entries first, then start tracking this month without moving or deleting anything."
-            : `You're in ${labelYM(getYM())}. Close the open month to move its entries into History and bring recurring bills forward.`}</p>
-          <button className="secondary-action full" disabled={monthBusy}
-            onClick={() => void (activeMonth === null ? beginTracking() : rollToThisMonth())}>
-            {monthBusy ? "Working..." : activeMonth === null ? `Track ${labelYM(getYM())} (keep all entries)` : `Close ${labelYM(activeMonth)} and continue`}
-          </button>
-          {monthError && <p className="form-error" role="alert">{monthError}</p>}
-        </section>
-      )}
 
       <section className="hero-card">
         <div className="eyebrow">Safe to spend</div>
